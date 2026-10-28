@@ -65,5 +65,5 @@ description: Use when ...（AI 靠这句判断该不该加载）
 
 ## 许可
 
-各技能目录内如有单独 LICENSE 以该文件为准。
+[MIT](skills/dsh-qq/LICENSE) —— 可自由使用、修改、再分发，只需保留版权声明。
 
