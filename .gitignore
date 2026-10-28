@@ -1,0 +1,39 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Env / secrets
+.env
+.env.local
+
+# 演练产物（轨迹计划、日志、截图，含真实坐标，不入库）
+out/
+runs/
+*.plan.json
+
+# 目标 App 安装包与反编译产物（体积大、含他人版权代码，不入库）
+samples/
+decompiled/
+
+# 下载的工具产物（APK 等，不入库）
+downloads/
+
+# DSH 本机技能发现目录（junction，指向 skills/，不入库）
+.dsh/
