@@ -1,4 +1,4 @@
-\---
+---
 
 name: dsh-qq
 description: Use when deploying an LLM into QQ on Windows (AstrBot + NapCat), or when fixing long-term memory, TTS voice, sticker packs, Qzone posting, personality drift, or a bot/service that silently fails to start in such a deployment.
