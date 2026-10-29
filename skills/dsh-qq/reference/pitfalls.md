@@ -213,3 +213,81 @@ icacls <dir> /inheritance:r /grant:r "<user>:(OI)(CI)F" /grant:r "SYSTEM:(OI)(CI
 **根因**：导入工具按包内 `settings/pack.json` 覆盖写入。
 
 **修法**：定死一条规则——**要么只在后台改，要么只改包再导入**，不要混用。
+
+---
+
+## 15. 操作层面的坑（不是技术问题，是手滑）
+
+云服务器部署时一次性踩齐了。这些比技术 bug 更常发生，排查时优先怀疑它们。
+
+### 15.1 命令敲在了错误的机器上
+
+**症状**：提示符是 `PS C:\Users\...>`，却敲了 Linux 命令，报 `ParserError: InvalidEndOfLine` 或 `&&不是有效语句分隔符`。
+
+**根因**：Windows 本地终端和云服务器终端是两台完全隔离的机器。
+
+**怎么区分**：
+
+| 终端 | 提示符 | 管谁 |
+|---|---|---|
+| Windows PowerShell | `PS C:\Users\...>` | 你本地电脑 |
+| Linux 服务器（OrcaTerm） | `root@VM-0-8-ubuntu:~#` | 云服务器 |
+
+**修法**：动手前先看提示符。本地改文件和服务器敲命令是两个窗口，别串。
+
+### 15.2 多条命令粘成一行
+
+**症状**：`git add skillsgit status`、`git pushGet-ChildItem`、`cd /opt/astrbot && nohup ... > run.log 2>&1 & ` 后面粘了下一句。
+
+**根因**：复制多行时漏了换行，或多行文本被终端合并。
+
+**修法**：**一次只粘一条**，粘完确认光标在行尾、命令完整，再按回车。宁可多敲几次回车。
+
+### 15.3 手工"整理"base64 字符串
+
+**症状**：`base64: invalid input`，或者解码出来的 Python 报 `SyntaxError: unterminated string literal`，位置在一个看似正常的括号处（如 `isinstance(v,"dict)`）。
+
+**根因**：base64 是逐字节编码，**改一个字符整段就废**。为了让长命令"好读"而重新断行/重排，等于人为破坏。
+
+**修法**：base64 只在两个地方出现——生成它（`[Convert]::ToBase64String`）和使用它（`echo '...' | base64 -d`）。**中间不许编辑**，要改就重新生成。
+
+生成后必做自校验：
+
+```powershell
+$ok = ([Convert]::ToBase64String([IO.File]::ReadAllBytes($src)) -eq $b64)
+```
+
+### 15.4 长命令被终端截断
+
+**症状**：2000+ 字符的命令粘进去，执行到一半报错，或 base64 解出来少了尾巴。
+
+**根因**：网页终端对单行长度有限制。
+
+**修法**：
+
+- 单条命令控制在 **1500 字符以内**
+- 超了就压缩脚本（去注释、合并行、缩短变量名）
+- 还超就**拆成多步**（每步一个短命令 + 文件落地），或者改用文件传输
+
+### 15.5 在 PowerShell 里用 `&&`
+
+**症状**：`标记“&&”不是此版本中的有效语句分隔符`。
+
+**根因**：PowerShell 5.1 不支持 `&&`（PowerShell 7+ 才支持）。
+
+**修法**：本地用 `;` 或分两行；这条规则**只在 Windows 成立**，Linux 上 `&&` 完全正常。
+
+### 15.6 用 `Set-Content -Encoding utf8` 写脚本又被 BOM 坑
+
+**症状**：生成的 base64 开头是 `77u/`（即 `EF BB BF`），脚本可能出错。
+
+**根因**：PowerShell 5.1 的 `utf8` = **带 BOM 的 UTF-8**。
+
+**修法**：写文件统一用无 BOM：
+
+```powershell
+[IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
+```
+
+写完检查首字节：`0x$([IO.File]::ReadAllBytes($path)[0].ToString('x2'))`，不该是 `0xef`。
+

@@ -30,6 +30,18 @@ QQ 小号(NTQQ) ←注入← NapCat ←反向WS→ AstrBot → 模型 API
 
 细节见 `reference/architecture.md`。
 
+### 两种部署形态
+
+| | 本地 Windows | 云服务器 Linux |
+|---|---|---|
+| 电脑关机/睡眠 | ❌ 机器人离线 | ✅ 照常运行 |
+| 崩溃恢复 | 轮询脚本 | systemd 自动重拉 |
+| 成本 | 电费 + 温度 | 约 109 元/年（4核4G） |
+| 复杂度 | 低（本机操作） | 中（要会 SSH/命令行） |
+
+**只有"电脑不能一直开"时才有必要上云。** 本地能解决就别折腾服务器。
+云端完整步骤见 `reference/cloud-linux.md`。
+
 ## 分阶段流程
 
 每阶段结束都要跑验证，别攒到最后一起调。
@@ -115,6 +127,7 @@ python -m venv .venv
 * `reference/architecture.md` — 组件职责、数据流、端口与进程对照
 * `reference/pitfalls.md` — 完整踩坑清单（含命令行/日志特征）
 * `reference/config-map.md` — 关键配置项 → 作用 → 推荐值
+* `reference/cloud-linux.md` — **云端部署**：Linux 服务器完整步骤（摆脱"电脑必须一直开着"）
 * `scripts/setup.py` — 一键配置：安全加固 + 平台 + 模型 + 语音 + 白名单（幂等，先停进程再跑）
 * `scripts/keepalive.ps1` — 守护进程（每 N 秒检查，进程死了自动拉起，只在状态变化时写日志）
 * `templates/onebot11.example.json` — NapCat 反向 WS 模板（脱敏，token 需与 AstrBot 侧一致）
