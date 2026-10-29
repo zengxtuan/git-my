@@ -37,3 +37,6 @@ downloads/
 
 # DSH 本机技能发现目录（junction，指向 skills/，不入库）
 .dsh/
+# 本地私人文档（含服务器 IP、凭据、部署状态，不入库）
+docs/
+AGENTS.md
