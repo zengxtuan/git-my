@@ -29,15 +29,18 @@ description: Use when ...（AI 靠这句判断该不该加载）
 
 ### `dsh-qq`
 
-把一个 OpenAI 兼容的大模型接进 QQ 小号，并挂上长期记忆、语音、表情包、空间动态、定时自启。Windows 环境，基于 AstrBot + NapCat。
+把一个 OpenAI 兼容的大模型接进 QQ 小号，并挂上长期记忆、语音、表情包、空间动态、定时自启。
+
+支持两种部署形态：**本地 Windows**（无需服务器，但电脑不能关机）和 **云端 Linux 服务器**（约 109 元/年，彻底摆脱"电脑必须一直开着"）。
 
 **包含内容**
 
 |文件|内容|
 |-|-|
-|`SKILL.md`|硬约束、四层架构、8 个阶段流程（每步带验证命令）|
+|`SKILL.md`|硬约束、四层架构、本地/云端形态对比、8 个阶段流程（每步带验证命令）|
 |`reference/architecture.md`|组件职责、一条消息的完整旅程、端口/进程/存储对照|
-|`reference/pitfalls.md`|14 条实战踩坑：BOM、CRLF、配置覆盖、token 随机化、ffmpeg、ACL 锁死、本机测防火墙的陷阱…|
+|`reference/cloud-linux.md`|**云端部署全流程**：换源、Python 3.12、AstrBot、插件绕过 CLI、NapCat+Xvfb、配置迁移、systemd、安全收尾|
+|`reference/pitfalls.md`|15 节实战踩坑：BOM、CRLF、配置覆盖、token 随机化、ffmpeg、ACL 锁死、操作层面的手滑…|
 |`reference/config-map.md`|配置项 → 作用 → 推荐值|
 |`scripts/setup.py`|幂等一键配置（安全加固 + 平台 + 模型 + 语音 + 白名单）|
 |`scripts/keepalive.ps1`|进程级自愈守护|
