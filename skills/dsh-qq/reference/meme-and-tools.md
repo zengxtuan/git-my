@@ -48,7 +48,7 @@ if self.emotion_llm_enabled and legacy_probability_hit:
 {
   "enabled": true,
   "vision_provider_id": "deepseek",   // 用哪个模型识别图
-  "manual_review": false,             // false = 直接入库（日志仍打印"等待审核"，是旧文案）
+  "manual_review": false,             // false = 直接入库（实测：日志文案与实际行为不一致，日志说"等待审核"但图片确实进库了）
   "target_pack_id": "<pack-id>",      // 空着会不知道往哪存
   "pending_limit": 400,
   "sampling_probability": 100,
@@ -133,7 +133,7 @@ data/plugin_data/meme_manager/
 ├── semantic_indexes/      // 向量索引（空 = 没建）
 ├── community_cache.json
 ├── backup/
-└── temp/auto_collect/     // 收图中转，正常应该是空的
+└── temp/auto_collect/     // 收图中转，处理完会清空
 ```
 
 ### 7. LLM 只有 `search_memes` 一个工具
@@ -212,7 +212,7 @@ print([n for n in names if 'search' in n])
 
 AstrBot 解析不了这个格式，就把它当普通文本发给用户了。
 
-**影响**：所有工具（`web_search_deepseek`、`search_memes`）都可能中招。
+**观察到的实例**：`web_search_deepseek` 和 `search_memes` 都出现过这个现象。
 
 **已知方向**：
 - 换 `deepseek-chat` / `deepseek-v4-pro`（工具调用更稳，但贵 3~5 倍）
@@ -290,7 +290,7 @@ curl -s https://api.deepseek.com/chat/completions \
 抓页：https://api.deepseek.com/v1/tools/fetch
 ```
 
-计费：**5 元 / 1000 次**（0.005 元一次）。
+计费：公开报道为 **5 元 / 1000 次**，未在官方文档核实，以实际账单为准。
 
 支持的 provider 合法值：
 
