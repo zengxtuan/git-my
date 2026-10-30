@@ -128,6 +128,7 @@ python -m venv .venv
 * `reference/pitfalls.md` — 完整踩坑清单（含命令行/日志特征）
 * `reference/config-map.md` — 关键配置项 → 作用 → 推荐值
 * `reference/cloud-linux.md` — **云端部署**：Linux 服务器完整步骤（摆脱"电脑必须一直开着"）
+* `reference/meme-and-tools.md` — **表情包 / 图像理解 / 工具调用**：meme_manager 全配置、NapCat 收藏表情 API、DSML 泄漏、DeepSeek 无 embedding
 * `scripts/setup.py` — 一键配置：安全加固 + 平台 + 模型 + 语音 + 白名单（幂等，先停进程再跑）
 * `scripts/keepalive.ps1` — 守护进程（每 N 秒检查，进程死了自动拉起，只在状态变化时写日志）
 * `templates/onebot11.example.json` — NapCat 反向 WS 模板（脱敏，token 需与 AstrBot 侧一致）
