@@ -103,6 +103,14 @@ def _install_stubs(data_dir: Path):
 
             return deco
 
+        @staticmethod
+        def on_decorating_result(*_a, **_k):
+            def deco(fn):
+                fn._handler = "on_decorating_result"
+                return fn
+
+            return deco
+
         class EventMessageType:
             ALL = 7
 
@@ -303,6 +311,35 @@ class FaceBridgeTest(unittest.TestCase):
         event = FakeEvent(text="把刚才那张表情包发我看看" * 5)
         asyncio.run(plugin.regex_send_face(event))
         self.assertEqual(event.sent, [])
+
+    def test_strip_dsml_full_block(self):
+        raw = (
+            "<｜｜DSML｜｜ calls>\n"
+            '<｜｜DSML｜｜ invoke name="web_search_deepseek">\n'
+            '<｜｜DSML｜｜ parameter name="query" string="true">深圳天气</｜｜DSML｜｜ parameter>\n'
+            "</｜｜DSML｜｜ invoke>\n"
+            "</｜｜DSML｜｜ calls>"
+        )
+        cleaned, cut = self.mod.strip_dsml(raw)
+        self.assertEqual(cleaned, "")
+        self.assertGreater(cut, 0)
+
+    def test_strip_dsml_truncated(self):
+        raw = '随便说一句\n<｜｜DSML｜｜ invoke name="search_memes">\n<｜｜DSML｜｜ parameter name="query" string="true">丧'
+        cleaned, cut = self.mod.strip_dsml(raw)
+        self.assertNotIn("DSML", cleaned)
+        self.assertTrue(cleaned.startswith("随便说一句"))
+
+    def test_strip_dsml_plain_text_untouched(self):
+        raw = "今天好累啊，早点睡"
+        cleaned, cut = self.mod.strip_dsml(raw)
+        self.assertEqual(cleaned, raw)
+        self.assertEqual(cut, 0)
+
+    def test_strip_dsml_ascii_pipes(self):
+        raw = '<||DSML||> calls>\n<||DSML||> invoke name="x">'
+        cleaned, _cut = self.mod.strip_dsml(raw)
+        self.assertNotIn("DSML", cleaned)
 
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})

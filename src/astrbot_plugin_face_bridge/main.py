@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -25,6 +26,31 @@ from astrbot.api.star import Context, Star, StarTools
 
 PLUGIN_NAME = "astrbot_plugin_face_bridge"
 EXT_WHITELIST = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+# deepseek-flash 会把内部工具标记当正文吐出来，竖线是全角 U+FF5C，不是 ASCII 竖线。
+# 样例：
+#   <｜｜DSML｜｜ calls>
+#   <｜｜DSML｜｜ invoke name="web_search_deepseek">
+#   <｜｜DSML｜｜ parameter name="query" string="true">...</｜｜DSML｜｜ parameter>
+#   </｜｜DSML｜｜ invoke>
+#   </｜｜DSML｜｜ calls>
+DSML_RE = re.compile(
+    r"<[|｜]{2}\s*DSML\s*[|｜]{2}[\s\S]*?(?:</[|｜]{2}\s*DSML\s*[|｜]{2}\s*calls>|\Z)"
+)
+DSML_LOOSE_RE = re.compile(r"<[|｜]{2}\s*DSML\s*[|｜]{2}[^\n]*")
+
+
+def strip_dsml(text: str) -> tuple[str, int]:
+    """剥掉 DSML 标记块，返回 (清理后文本, 删除的字符数)。"""
+    if not text or "DSML" not in text:
+        return text, 0
+    cleaned, n = DSML_RE.subn("", text)
+    if n == 0:
+        # 结构不完整（被截断）时按行兜底
+        cleaned, n2 = DSML_LOOSE_RE.subn("", cleaned)
+        n = n2
+    cleaned = cleaned.strip()
+    return cleaned, len(text) - len(cleaned)
 
 
 def _md5_of(path: Path) -> str:
@@ -168,6 +194,34 @@ class FaceBridge(Star):
                 self._save_index()
             except Exception as e:
                 logger.error("[face_bridge] 存档异常: %s", e, exc_info=True)
+
+    @filter.on_decorating_result()
+    async def strip_dsml_leak(self, event: AstrMessageEvent):
+        """发送前剥掉 DSML 泄漏文本，别让用户看到模型内部标记。"""
+        try:
+            result = event.get_result()
+        except Exception:
+            return
+        chain = getattr(result, "chain", None)
+        if not chain:
+            return
+        removed = 0
+        for comp in chain:
+            text = getattr(comp, "text", None)
+            if not isinstance(text, str) or "DSML" not in text:
+                continue
+            new_text, cut = strip_dsml(text)
+            removed += cut
+            comp.text = new_text
+        if not removed:
+            return
+        alive = [c for c in chain if getattr(c, "text", None) or not hasattr(c, "text")]
+        if not alive:
+            chain.clear()
+            chain.append(Plain("……我这边刚卡了一下，你再说一遍？"))
+            logger.warning("[face_bridge] 整条回复都是 DSML，已替换为兜底文本")
+        else:
+            logger.warning("[face_bridge] 已剥掉 DSML 泄漏文本 %d 字符", removed)
 
     @filter.on_llm_request(priority=1)
     async def debug_toolset(self, event: AstrMessageEvent, req):
