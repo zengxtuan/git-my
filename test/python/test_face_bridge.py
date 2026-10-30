@@ -79,6 +79,14 @@ def _install_stubs(data_dir: Path):
 
             return deco
 
+        @staticmethod
+        def on_llm_request(*_a, **_k):
+            def deco(fn):
+                fn._handler = "on_llm_request"
+                return fn
+
+            return deco
+
         class EventMessageType:
             ALL = 7
 

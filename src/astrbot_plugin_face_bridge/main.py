@@ -169,6 +169,20 @@ class FaceBridge(Star):
             except Exception as e:
                 logger.error("[face_bridge] 存档异常: %s", e, exc_info=True)
 
+    @filter.on_llm_request(priority=1)
+    async def debug_toolset(self, event: AstrMessageEvent, req):
+        """确认 send_face 是否随请求下发（排障用，轻日志）。"""
+        try:
+            ts = getattr(req, "func_tool", None)
+            get_tool = getattr(ts, "get_tool", None)
+            has = bool(callable(get_tool) and get_tool("send_face"))
+            total = len(getattr(ts, "tools", []) or [])
+            logger.info(
+                "[face_bridge] req toolset: send_face=%s, total=%s", has, total
+            )
+        except Exception as e:
+            logger.warning("[face_bridge] toolset probe failed: %s", e)
+
     # ------------------------------------------------------------------ tools
 
     @llm_tool(name="save_face")
