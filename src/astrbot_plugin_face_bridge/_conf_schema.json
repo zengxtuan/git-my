@@ -1,0 +1,12 @@
+{
+  "auto_archive": {
+    "description": "收到图片时自动存进 QQ 收藏表情（调用 NapCat add_custom_face）",
+    "type": "bool",
+    "default": true
+  },
+  "max_send_bytes": {
+    "description": "允许存进收藏表情的单图最大字节数",
+    "type": "int",
+    "default": 5242880
+  }
+}

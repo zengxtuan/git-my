@@ -1,0 +1,5 @@
+name: astrbot_plugin_face_bridge
+desc: 把收到的图片存进 QQ 收藏表情，并让模型按 ID 直接发图
+version: 1.0.0
+author: YG
+repo: ""
