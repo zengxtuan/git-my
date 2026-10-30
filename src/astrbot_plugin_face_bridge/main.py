@@ -50,6 +50,13 @@ VOICE_REQUEST_WORDS = (
     "读给我听",
 )
 
+# 模型明明有联网能力却不主动用（实测日志里 web_search 只在 DSML 那次出现过）。
+# 所以遇到"问梗/问词"的消息，插件直接先搜一次，把资料塞进本轮请求。
+LOOKUP_HINT_RE = re.compile(
+    r"(梗|什么意思|啥意思|这是啥|怎么理解|什么鬼|啥啊|啥梗|啥玩意|啥东西|什么梗)"
+)
+ABBR_RE = re.compile(r"^[a-zA-Z]{3,12}$")
+
 
 def strip_dsml(text: str) -> tuple[str, int]:
     """剥掉 DSML 标记块，返回 (清理后文本, 删除的字符数)。"""
@@ -266,6 +273,83 @@ class FaceBridge(Star):
             logger.info("[face_bridge] 按需语音已附加: %s", audio)
         except Exception as e:
             logger.error("[face_bridge] 按需语音失败: %s", e, exc_info=True)
+
+    @filter.on_llm_request(priority=2)
+    async def auto_lookup(self, event: AstrMessageEvent, req):
+        """问梗/问生词的短消息，先联网查一次再把资料塞进本轮请求。"""
+        text = ""
+        try:
+            text = (event.get_message_str() or "").strip()
+        except Exception:
+            return
+        if not text or len(text) > 60:
+            return
+        if not (LOOKUP_HINT_RE.search(text) or ABBR_RE.fullmatch(text)):
+            return
+        key = self._websearch_key()
+        if not key:
+            return
+        summary = await self._search_web(text, key)
+        if not summary:
+            return
+        note = (
+            "【刚联网查到的资料，别照抄原话，用你自己的口气讲】：\n" + summary
+        )
+        parts = getattr(req, "extra_user_content_parts", None)
+        try:
+            if isinstance(parts, list):
+                parts.append({"type": "text", "text": note})
+            else:
+                req.prompt = (req.prompt or "") + "\n\n" + note
+        except Exception as e:
+            logger.warning("[face_bridge] 注入检索结果失败: %s", e)
+            return
+        logger.info("[face_bridge] 梗检索命中 %r -> %d 字", text[:20], len(summary))
+
+    def _websearch_key(self) -> str:
+        try:
+            cfg = self.context.get_config()
+            keys = cfg.get("provider_settings", {}).get("websearch_deepseek_key") or []
+            return str(keys[0]) if keys else ""
+        except Exception:
+            return ""
+
+    async def _search_web(self, query: str, key: str, timeout: float = 6.0) -> str:
+        try:
+            import aiohttp
+
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            }
+            payload = {"query": query[:100], "max_results": 3}
+            tm = aiohttp.ClientTimeout(total=timeout)
+            async with aiohttp.ClientSession(timeout=tm) as sess:
+                async with sess.post(
+                    "https://api.deepseek.com/v1/tools/search",
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(
+                            "[face_bridge] 检索 HTTP %s", resp.status
+                        )
+                        return ""
+                    data = await resp.json()
+        except Exception as e:
+            logger.warning("[face_bridge] 检索失败: %s", e)
+            return ""
+        items = data.get("results") or data.get("data") or []
+        lines = []
+        for it in items[:3]:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title") or it.get("name") or "").strip()
+            body = str(it.get("content") or it.get("snippet") or "").strip()
+            body = re.sub(r"\s+", " ", body)[:200]
+            if title or body:
+                lines.append(f"- {title}：{body}")
+        return "\n".join(lines)
 
     @filter.on_llm_request(priority=1)
     async def debug_toolset(self, event: AstrMessageEvent, req):

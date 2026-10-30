@@ -388,6 +388,57 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertEqual(len(ctx.tts.calls), 1)
         self.assertEqual(len(ev2._result.chain), 1)
 
+    def test_lookup_trigger_detection(self):
+        self.assertTrue(self.mod.LOOKUP_HINT_RE.search("班味是什么梗"))
+        self.assertTrue(self.mod.LOOKUP_HINT_RE.search("这啥意思啊"))
+        self.assertTrue(self.mod.ABBR_RE.fullmatch("kskbl"))
+        self.assertFalse(self.mod.LOOKUP_HINT_RE.search("今天吃了啥"))
+        self.assertFalse(self.mod.ABBR_RE.fullmatch("吃了吗"))
+
+    def test_auto_lookup_skips_without_key(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        ev = FakeEvent(text="班味是什么梗")
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.auto_lookup(ev, req))
+        self.assertEqual(req.extra_user_content_parts, [])
+        self.assertEqual(req.prompt, "hi")
+
+    def test_auto_lookup_skips_normal_chat(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        calls = []
+        plugin._websearch_key = lambda: "fake-key"
+
+        async def fake_search(q, k, timeout=6.0):
+            calls.append(q)
+            return "- 结果"
+
+        plugin._search_web = fake_search
+        ev = FakeEvent(text="今天好累啊")
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.auto_lookup(ev, req))
+        self.assertEqual(calls, [])
+        self.assertEqual(req.extra_user_content_parts, [])
+
+    def test_auto_lookup_injects_when_hit(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        plugin._websearch_key = lambda: "fake-key"
+
+        async def fake_search(q, k, timeout=6.0):
+            return "- 班味：指职场疲惫状态"
+
+        plugin._search_web = fake_search
+        ev = FakeEvent(text="班味是什么梗")
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.auto_lookup(ev, req))
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        self.assertIn("班味", req.extra_user_content_parts[0]["text"])
+
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})
         import asyncio
