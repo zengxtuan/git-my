@@ -21,7 +21,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, llm_tool, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image, Plain, Record
 from astrbot.api.star import Context, Star, StarTools
 
 PLUGIN_NAME = "astrbot_plugin_face_bridge"
@@ -38,6 +38,17 @@ DSML_RE = re.compile(
     r"<[|｜]{2}\s*DSML\s*[|｜]{2}[\s\S]*?(?:</[|｜]{2}\s*DSML\s*[|｜]{2}\s*calls>|\Z)"
 )
 DSML_LOOSE_RE = re.compile(r"<[|｜]{2}\s*DSML\s*[|｜]{2}[^\n]*")
+
+# 用户明确要语音才合成：TTS 的 trigger_probability 已设为 0，主动发语音一律不发。
+VOICE_REQUEST_WORDS = (
+    "语音",
+    "声音",
+    "念给我听",
+    "念给我",
+    "说句话",
+    "说话给我听",
+    "读给我听",
+)
 
 
 def strip_dsml(text: str) -> tuple[str, int]:
@@ -222,6 +233,39 @@ class FaceBridge(Star):
             logger.warning("[face_bridge] 整条回复都是 DSML，已替换为兜底文本")
         else:
             logger.warning("[face_bridge] 已剥掉 DSML 泄漏文本 %d 字符", removed)
+
+    @filter.on_decorating_result(priority=50)
+    async def voice_on_demand(self, event: AstrMessageEvent):
+        """用户明确要语音时才合成一条语音附在回复上（主动发语音已全局关闭）。"""
+        text = ""
+        try:
+            text = event.get_message_str() or ""
+        except Exception:
+            return
+        if not any(w in text for w in VOICE_REQUEST_WORDS):
+            return
+        try:
+            result = event.get_result()
+            chain = getattr(result, "chain", None)
+            if not chain:
+                return
+            spoken = "".join(
+                c.text for c in chain if isinstance(c, Plain) and getattr(c, "text", None)
+            ).strip()
+            if not spoken:
+                return
+            provider = self.context.get_using_tts_provider(event.unified_msg_origin)
+            if provider is None:
+                logger.warning("[face_bridge] 要语音但当前没有可用的 TTS provider")
+                return
+            audio = await provider.get_audio(spoken[:200])
+            if not audio:
+                logger.warning("[face_bridge] TTS 合成返回空")
+                return
+            chain.append(Record(file=audio))
+            logger.info("[face_bridge] 按需语音已附加: %s", audio)
+        except Exception as e:
+            logger.error("[face_bridge] 按需语音失败: %s", e, exc_info=True)
 
     @filter.on_llm_request(priority=1)
     async def debug_toolset(self, event: AstrMessageEvent, req):

@@ -124,6 +124,12 @@ def _install_stubs(data_dir: Path):
             self.text = text
 
     message.Plain = Plain
+
+    class Record:
+        def __init__(self, file=""):
+            self.file = file
+
+    message.Record = Record
     star_mod.Context = Context
     star_mod.Star = Star
     star_mod.StarTools = StarTools
@@ -154,18 +160,26 @@ class FakeBot:
 
 
 class FakeEvent:
-    def __init__(self, images=(), bot=None, text=""):
+    def __init__(self, images=(), bot=None, text="", reply=""):
         self._images = list(images)
         self.bot = bot or FakeBot()
         self.sent = []
         self._text = text
         self.stopped = False
+        self.unified_msg_origin = "qq:FriendMessage:1"
+        self._result = None
+        if reply:
+            PlainCls = sys.modules["astrbot.api.message_components"].Plain
+            self._result = types.SimpleNamespace(chain=[PlainCls(reply)])
 
     def get_messages(self):
         return self._images
 
     def get_message_str(self):
         return self._text
+
+    def get_result(self):
+        return self._result
 
     def stop_event(self):
         self.stopped = True
@@ -340,6 +354,39 @@ class FaceBridgeTest(unittest.TestCase):
         raw = '<||DSML||> calls>\n<||DSML||> invoke name="x">'
         cleaned, _cut = self.mod.strip_dsml(raw)
         self.assertNotIn("DSML", cleaned)
+
+    def test_voice_added_only_when_requested(self):
+        import asyncio
+
+        class FakeTTS:
+            def __init__(self):
+                self.calls = []
+
+            async def get_audio(self, text):
+                self.calls.append(text)
+                return "/tmp/fake.wav"
+
+        class Ctx:
+            def __init__(self):
+                self.tts = FakeTTS()
+
+            def get_using_tts_provider(self, umo=None):
+                return self.tts
+
+        ctx = Ctx()
+        plugin = self.mod.FaceBridge(ctx, {})
+
+        ev = FakeEvent(text="说句话给我听", reply="行啊")
+        asyncio.run(plugin.voice_on_demand(ev))
+        self.assertEqual(ctx.tts.calls, ["行啊"])
+        self.assertEqual(len(ev._result.chain), 2)
+        self.assertEqual(ev._result.chain[-1].file, "/tmp/fake.wav")
+
+        # 普通消息不该触发
+        ev2 = FakeEvent(text="今天吃了啥", reply="随便吃了点")
+        asyncio.run(plugin.voice_on_demand(ev2))
+        self.assertEqual(len(ctx.tts.calls), 1)
+        self.assertEqual(len(ev2._result.chain), 1)
 
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})
