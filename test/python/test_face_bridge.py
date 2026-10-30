@@ -216,6 +216,23 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(len(event.sent), 1)
 
+    def test_send_face_empty_id_sends_latest(self):
+        plugin = self.mod.FaceBridge(None, {})
+        import asyncio
+
+        old = self._gif("old.gif", b"GIF89a-old" + b"a" * 10)
+        new = self._gif("new.gif", b"GIF89a-new" + b"b" * 10)
+        rec_old = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(old)))
+        rec_new = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(new)))
+        rec_old["added"] = 1
+        rec_new["added"] = 2
+
+        event = FakeEvent()
+        out = json.loads(asyncio.run(plugin.send_face_tool(event, "")))
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["sent"], rec_new["id"])
+        self.assertEqual(len(event.sent), 1)
+
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})
         import asyncio

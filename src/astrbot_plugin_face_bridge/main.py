@@ -207,29 +207,39 @@ class FaceBridge(Star):
         )
 
     @llm_tool(name="send_face")
-    async def send_face_tool(self, event: AstrMessageEvent, face_id: str) -> str:
-        """按表情 ID 直接把那张图发出去。
+    async def send_face_tool(self, event: AstrMessageEvent, face_id: str = "") -> str:
+        """把表情库里的一张图直接发出去。
 
-        ID 来自 list_faces 或 save_face 的返回，不要自己编。
-        想发图时先 list_faces 拿 ID，再调用本工具。
+        想发表情时调用一次即可。不填 ID 就发最近存进来的那一张，
+        所以用户说“把你刚收的那张发我”时直接调用、不用先查列表。
 
         Args:
-            face_id(string): 表情 ID，形如 3f2a9c1b7d4e
+            face_id(string): 表情 ID，可留空；留空表示发最新的那一张
 
         Returns:
             发送结果说明。
         """
         face_id = str(face_id or "").strip().strip("`")
-        rec = self.index.get(face_id)
-        if not rec:
-            hits = [k for k in self.index if k.startswith(face_id)][:3]
-            if len(hits) == 1:
-                rec = self.index[hits[0]]
-            else:
+        if not face_id or face_id.lower() in ("latest", "new", "recent", "0"):
+            latest = sorted(
+                self.index.values(), key=lambda r: r.get("added", 0), reverse=True
+            )
+            if not latest:
                 return json.dumps(
-                    {"ok": False, "reason": f"没有 ID 为 {face_id} 的表情"},
-                    ensure_ascii=False,
+                    {"ok": False, "reason": "表情库是空的"}, ensure_ascii=False
                 )
+            rec = latest[0]
+        else:
+            rec = self.index.get(face_id)
+            if not rec:
+                hits = [k for k in self.index if k.startswith(face_id)][:3]
+                if len(hits) == 1:
+                    rec = self.index[hits[0]]
+                else:
+                    return json.dumps(
+                        {"ok": False, "reason": f"没有 ID 为 {face_id} 的表情"},
+                        ensure_ascii=False,
+                    )
         path = Path(rec["path"])
         if not path.exists():
             return json.dumps(
