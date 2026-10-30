@@ -87,6 +87,22 @@ def _install_stubs(data_dir: Path):
 
             return deco
 
+        @staticmethod
+        def command(*_a, **_k):
+            def deco(fn):
+                fn._handler = "command"
+                return fn
+
+            return deco
+
+        @staticmethod
+        def regex(*_a, **_k):
+            def deco(fn):
+                fn._handler = "regex"
+                return fn
+
+            return deco
+
         class EventMessageType:
             ALL = 7
 
@@ -94,6 +110,12 @@ def _install_stubs(data_dir: Path):
     event_mod.MessageChain = MessageChain
     event_mod.filter = _Filter
     message.Image = Image
+
+    class Plain:
+        def __init__(self, text=""):
+            self.text = text
+
+    message.Plain = Plain
     star_mod.Context = Context
     star_mod.Star = Star
     star_mod.StarTools = StarTools
@@ -124,13 +146,21 @@ class FakeBot:
 
 
 class FakeEvent:
-    def __init__(self, images=(), bot=None):
+    def __init__(self, images=(), bot=None, text=""):
         self._images = list(images)
         self.bot = bot or FakeBot()
         self.sent = []
+        self._text = text
+        self.stopped = False
 
     def get_messages(self):
         return self._images
+
+    def get_message_str(self):
+        return self._text
+
+    def stop_event(self):
+        self.stopped = True
 
     async def send(self, chain):
         self.sent.append(chain)
@@ -240,6 +270,39 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["sent"], rec_new["id"])
         self.assertEqual(len(event.sent), 1)
+
+    def test_regex_rule_sends_latest_and_stops(self):
+        plugin = self.mod.FaceBridge(None, {})
+        import asyncio
+
+        src = self._gif("rule.gif", b"GIF89a-rule" + b"r" * 8)
+        rec = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
+        event = FakeEvent(text="把刚才那张表情包发我看看")
+        asyncio.run(plugin.regex_send_face(event))
+        self.assertEqual(len(event.sent), 1)
+        self.assertTrue(event.stopped)
+        self.assertEqual(rec["id"], plugin.index[rec["id"]]["id"])
+
+    def test_regex_rule_ignores_unrelated_text(self):
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("rule2.gif", b"GIF89a-rule2" + b"t" * 8)
+        import asyncio
+
+        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
+        event = FakeEvent(text="今天好累啊")
+        asyncio.run(plugin.regex_send_face(event))
+        self.assertEqual(event.sent, [])
+        self.assertFalse(event.stopped)
+
+    def test_regex_rule_ignores_long_text(self):
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("rule3.gif", b"GIF89a-rule3" + b"u" * 8)
+        import asyncio
+
+        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
+        event = FakeEvent(text="把刚才那张表情包发我看看" * 5)
+        asyncio.run(plugin.regex_send_face(event))
+        self.assertEqual(event.sent, [])
 
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})

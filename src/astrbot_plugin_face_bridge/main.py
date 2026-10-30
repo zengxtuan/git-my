@@ -20,7 +20,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, llm_tool, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import Image
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, StarTools
 
 PLUGIN_NAME = "astrbot_plugin_face_bridge"
@@ -183,6 +183,42 @@ class FaceBridge(Star):
         except Exception as e:
             logger.warning("[face_bridge] toolset probe failed: %s", e)
 
+    # ---------------------------------------------------------------- rule path
+    # 模型不一定会调工具，所以"把那张发我"这类明确请求走确定性规则，不赌模型。
+
+    async def _send_latest(self, event: AstrMessageEvent, reason: str) -> bool:
+        latest = sorted(
+            self.index.values(), key=lambda r: r.get("added", 0), reverse=True
+        )
+        if not latest:
+            await event.send(MessageChain([Plain("库里还没有图呢")]))
+            return False
+        rec = latest[0]
+        path = Path(rec["path"])
+        if not path.exists():
+            logger.warning("[face_bridge] 规则触发但文件丢失: %s", rec["id"])
+            return False
+        logger.info("[face_bridge] 规则命中(%s) -> 发送最新图 %s", reason, rec["id"])
+        await event.send(MessageChain([Image.fromFileSystem(path)]))
+        return True
+
+    @filter.command("发图")
+    async def cmd_send_face(self, event: AstrMessageEvent):
+        """直接发最新收进库的那张表情。"""
+        await self._send_latest(event, reason="command")
+        event.stop_event()
+
+    @filter.regex(r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张)")
+    async def regex_send_face(self, event: AstrMessageEvent):
+        text = event.get_message_str() or ""
+        if len(text) > 40:
+            return
+        if not any(k in text for k in ("图", "表情", "那张", "这张")):
+            return
+        ok = await self._send_latest(event, reason="regex")
+        if ok:
+            event.stop_event()
+
     # ------------------------------------------------------------------ tools
 
     @llm_tool(name="save_face")
@@ -234,6 +270,7 @@ class FaceBridge(Star):
             发送结果说明。
         """
         face_id = str(face_id or "").strip().strip("`")
+        logger.info("[face_bridge] LLM 调用 send_face, face_id=%r", face_id)
         if not face_id or face_id.lower() in ("latest", "new", "recent", "0"):
             latest = sorted(
                 self.index.values(), key=lambda r: r.get("added", 0), reverse=True
