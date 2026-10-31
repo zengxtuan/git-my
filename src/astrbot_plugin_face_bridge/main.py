@@ -57,6 +57,14 @@ LOOKUP_HINT_RE = re.compile(
 )
 ABBR_RE = re.compile(r"^[a-zA-Z]{3,12}$")
 
+# 照片存档：大图不当表情处理，单独归到 photos/，能按日期翻回来再发
+PHOTO_DIR_NAME = "photos"
+PHOTO_INDEX_NAME = "photos.json"
+PHOTO_SAVE_RE = re.compile(
+    r"(?:(?:存|保存|留着|收着|收藏).{0,8}(?:这张|这图|照片|我发))"
+    r"|(?:(?:这张|这图|这张图|这张照片|照片).{0,6}(?:存下来|保存|留着|收着))"
+)
+
 
 def strip_dsml(text: str) -> tuple[str, int]:
     """剥掉 DSML 标记块，返回 (清理后文本, 删除的字符数)。"""
@@ -79,6 +87,32 @@ def _md5_of(path: Path) -> str:
     return h.hexdigest()
 
 
+def _image_size(path: Path) -> tuple[int, int]:
+    """尽力取图片宽高，取不到返回 (0, 0)。"""
+    try:
+        from PIL import Image as PILImage
+
+        with PILImage.open(path) as im:
+            return int(im.width), int(im.height)
+    except Exception:
+        return 0, 0
+
+
+def looks_like_meme(ext: str, size: int, w: int, h: int) -> bool:
+    """判断收到的图该走表情链路还是照片链路。
+
+    GIF 一律当表情；边长不超过 512 且体积不大（<=300KB）也当表情；
+    其余（大图、长边超 512、体积大）当照片处理，不往 QQ 收藏表情里塞。
+    """
+    if ext == ".gif":
+        return True
+    if w and h and max(w, h) > 512:
+        return False
+    if size > 300 * 1024:
+        return False
+    return True
+
+
 class FaceBridge(Star):
     """大肥鱼的表情桥：收图入库 + 按 ID 发图。"""
 
@@ -93,11 +127,18 @@ class FaceBridge(Star):
         self.img_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.root / "index.json"
         self.index: dict[str, dict] = self._load_index()
+
+        self.photo_dir = self.root / PHOTO_DIR_NAME
+        self.photo_dir.mkdir(parents=True, exist_ok=True)
+        self.photo_index_path = self.root / PHOTO_INDEX_NAME
+        self.photos: dict[str, dict] = self._load_photos()
+
         self.max_bytes = int(self.config.get("max_send_bytes", 5242880) or 5242880)
         logger.info(
-            "[face_bridge] loaded: %d faces cached, dir=%s",
+            "[face_bridge] loaded: %d faces / %d photos cached, dir=%s",
             len(self.index),
-            self.img_dir,
+            len(self.photos),
+            self.root,
         )
 
     # ------------------------------------------------------------------ storage
@@ -120,6 +161,81 @@ class FaceBridge(Star):
             )
         except Exception as e:
             logger.error("[face_bridge] index.json 写入失败: %s", e)
+
+    def _load_photos(self) -> dict[str, dict]:
+        if not self.photo_index_path.exists():
+            return {}
+        try:
+            data = json.loads(self.photo_index_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.error("[face_bridge] photos.json 读取失败: %s", e)
+            return {}
+
+    def _save_photos(self) -> None:
+        try:
+            self.photo_index_path.write_text(
+                json.dumps(self.photos, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.error("[face_bridge] photos.json 写入失败: %s", e)
+
+    async def _store_photo(
+        self, event: AstrMessageEvent, img: Image, note: str = "", src: Path | None = None
+    ) -> dict | None:
+        """把消息里的图存进照片相册（不进 QQ 收藏表情）。"""
+        try:
+            src = src or Path(await img.convert_to_file_path())
+        except Exception as e:
+            logger.error("[face_bridge] 照片落地失败: %s", e)
+            return None
+        if not src.exists():
+            return None
+        size = src.stat().st_size
+        if size > self.max_bytes:
+            logger.warning("[face_bridge] 照片过大跳过: %d bytes", size)
+            return None
+        ext = src.suffix.lower()
+        if ext not in EXT_WHITELIST:
+            ext = ".jpg"
+        md5 = _md5_of(src)
+        pid = md5[:12]
+        if pid in self.photos:
+            rec = self.photos[pid]
+            logger.info("[face_bridge] 照片已存在: %s", pid)
+            return rec
+        w, h = _image_size(src)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = self.photo_dir / f"{stamp}_{pid}{ext}"
+        try:
+            if src.resolve() != dest.resolve():
+                shutil.copyfile(src, dest)
+        except Exception as e:
+            logger.error("[face_bridge] 照片复制失败: %s", e)
+            return None
+        try:
+            sender = event.get_sender_id()
+        except Exception:
+            sender = ""
+        rec = {
+            "id": pid,
+            "path": str(dest),
+            "md5": md5,
+            "size": size,
+            "w": w,
+            "h": h,
+            "added": int(time.time()),
+            "day": time.strftime("%Y-%m-%d"),
+            "sender": sender,
+            "note": note,
+        }
+        self.photos[pid] = rec
+        self._save_photos()
+        logger.info(
+            "[face_bridge] 照片已存 %s (%dx%d, %d bytes)", pid, w, h, size
+        )
+        return rec
 
     # --------------------------------------------------------------- qq action
 
@@ -145,9 +261,11 @@ class FaceBridge(Star):
             logger.error("[face_bridge] add_custom_face 失败 %s: %s", path.name, e)
             return False, str(e)[:200]
 
-    async def _store_image(self, event: AstrMessageEvent, img: Image) -> dict | None:
+    async def _store_image(
+        self, event: AstrMessageEvent, img: Image, src: Path | None = None
+    ) -> dict | None:
         """把消息里的 Image 落地成文件并登记。"""
-        src = Path(await img.convert_to_file_path())
+        src = src or Path(await img.convert_to_file_path())
         if not src.exists():
             logger.warning("[face_bridge] 图片落地失败: %s", src)
             return None
@@ -199,9 +317,29 @@ class FaceBridge(Star):
             return
         if not images:
             return
+        text = ""
+        try:
+            text = event.get_message_str() or ""
+        except Exception:
+            pass
+        force_photo = bool(PHOTO_SAVE_RE.search(text))
         for img in images:
             try:
-                rec = await self._store_image(event, img)
+                try:
+                    path = Path(await img.convert_to_file_path())
+                except Exception:
+                    path = None
+                if force_photo:
+                    await self._store_photo(event, img, src=path)
+                    continue
+                if path is not None and path.exists():
+                    ext = path.suffix.lower()
+                    size = path.stat().st_size
+                    w, h = _image_size(path) if ext != ".gif" else (0, 0)
+                    if not looks_like_meme(ext, size, w, h):
+                        await self._store_photo(event, img, src=path)
+                        continue
+                rec = await self._store_image(event, img, src=path)
                 if rec is None:
                     continue
                 if rec.get("in_qq_face"):
@@ -390,10 +528,78 @@ class FaceBridge(Star):
         await self._send_latest(event, reason="command")
         event.stop_event()
 
+    # ------------------------------------------------------------- photo album
+
+    async def _send_photo(self, event: AstrMessageEvent, photo_id: str = "") -> dict:
+        photo_id = str(photo_id or "").strip().strip("`")
+        if not photo_id or photo_id.lower() in ("latest", "new", "recent", "0"):
+            ordered = sorted(
+                self.photos.values(), key=lambda r: r.get("added", 0), reverse=True
+            )
+            if not ordered:
+                return {"ok": False, "reason": "相册里还没有照片"}
+            rec = ordered[0]
+        else:
+            rec = self.photos.get(photo_id)
+            if not rec:
+                hits = [k for k in self.photos if k.startswith(photo_id)][:3]
+                if len(hits) == 1:
+                    rec = self.photos[hits[0]]
+                else:
+                    return {"ok": False, "reason": f"没有编号 {photo_id} 的照片"}
+        path = Path(rec["path"])
+        if not path.exists():
+            return {"ok": False, "reason": "照片文件丢了"}
+        await event.send(MessageChain([Image.fromFileSystem(path)]))
+        logger.info("[face_bridge] 发照片 %s (%s)", rec["id"], rec.get("day", ""))
+        return {"ok": True, "sent": rec["id"], "day": rec.get("day", "")}
+
+    @filter.command("照片")
+    async def cmd_list_photos(self, event: AstrMessageEvent):
+        """看看相册里存了哪些照片。"""
+        items = sorted(
+            self.photos.values(), key=lambda r: r.get("added", 0), reverse=True
+        )[:10]
+        if not items:
+            await event.send(MessageChain([Plain("相册还是空的呢")]))
+        else:
+            lines = [
+                f"{r.get('day', '')}  {r['id']}  {r.get('w', 0)}x{r.get('h', 0)}"
+                for r in items
+            ]
+            await event.send(
+                MessageChain(
+                    [Plain(f"相册里最近 {len(items)} 张：\n" + "\n".join(lines))]
+                )
+            )
+        event.stop_event()
+
+    @filter.command("存照片")
+    async def cmd_save_photo(self, event: AstrMessageEvent):
+        """把这条消息里的图存进相册。"""
+        images = [c for c in event.get_messages() if isinstance(c, Image)]
+        if not images:
+            await event.send(MessageChain([Plain("你得先把照片发给我呀")]))
+            event.stop_event()
+            return
+        saved = 0
+        for img in images:
+            try:
+                if await self._store_photo(event, img):
+                    saved += 1
+            except Exception as e:
+                logger.error("[face_bridge] 存照片失败: %s", e)
+        await event.send(
+            MessageChain([Plain(f"存好了，{saved} 张" if saved else "没存上，再看下？")])
+        )
+        event.stop_event()
+
     @filter.regex(r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张)")
     async def regex_send_face(self, event: AstrMessageEvent):
         text = event.get_message_str() or ""
         if len(text) > 40:
+            return
+        if PHOTO_SAVE_RE.search(text):  # "把这张存下来"不该触发发图
             return
         if not any(k in text for k in ("图", "表情", "那张", "这张")):
             return
@@ -515,3 +721,81 @@ class FaceBridge(Star):
             },
             ensure_ascii=False,
         )
+
+    # -------------------------------------------------------------- photo tools
+
+    @llm_tool(name="save_photo")
+    async def save_photo_tool(self, event: AstrMessageEvent, note: str = "") -> str:
+        """把本条消息里的图片存进相册（照片存档，不进表情收藏）。
+
+        用户说「这张存下来」「帮我留着」「记住这张照片」时调用。
+
+        Args:
+            note(string): 可留空的备注，比如"主人今天拍的"
+
+        Returns:
+            JSON，含是否成功、照片编号和日期。
+        """
+        images = [c for c in event.get_messages() if isinstance(c, Image)]
+        if not images:
+            return json.dumps(
+                {"ok": False, "reason": "这条消息里没有图片"}, ensure_ascii=False
+            )
+        out = []
+        for img in images:
+            rec = await self._store_photo(event, img, note=str(note or ""))
+            if rec:
+                out.append(
+                    {"id": rec["id"], "day": rec.get("day", ""), "size": rec.get("size", 0)}
+                )
+        return json.dumps({"ok": bool(out), "photos": out}, ensure_ascii=False)
+
+    @llm_tool(name="list_photos")
+    async def list_photos_tool(self, event: AstrMessageEvent, limit: int = 10) -> str:
+        """列出相册里最近的照片。
+
+        用户问「你都存了我哪些照片」「上次那张还在吗」时调用。
+
+        Args:
+            limit(number): 返回条数，最多 30
+
+        Returns:
+            JSON，含总数与每张的编号、日期、尺寸。
+        """
+        try:
+            n = max(1, min(int(limit), 30))
+        except Exception:
+            n = 10
+        items = sorted(
+            self.photos.values(), key=lambda r: r.get("added", 0), reverse=True
+        )[:n]
+        return json.dumps(
+            {
+                "total": len(self.photos),
+                "items": [
+                    {
+                        "id": r["id"],
+                        "day": r.get("day", ""),
+                        "size": f"{r.get('w', 0)}x{r.get('h', 0)}",
+                        "note": r.get("note", ""),
+                    }
+                    for r in items
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    @llm_tool(name="send_photo")
+    async def send_photo_tool(self, event: AstrMessageEvent, photo_id: str = "") -> str:
+        """把相册里的照片发出去。
+
+        编号留空就发最新存的那张，所以「把刚才那张照片发我」直接调用即可。
+
+        Args:
+            photo_id(string): 照片编号，可留空；留空表示发最新那张
+
+        Returns:
+            JSON，含是否成功与发出的编号。
+        """
+        result = await self._send_photo(event, photo_id)
+        return json.dumps(result, ensure_ascii=False)

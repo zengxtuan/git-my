@@ -178,6 +178,9 @@ class FakeEvent:
     def get_message_str(self):
         return self._text
 
+    def get_sender_id(self):
+        return "3588255101"
+
     def get_result(self):
         return self._result
 
@@ -438,6 +441,76 @@ class FaceBridgeTest(unittest.TestCase):
         asyncio.run(plugin.auto_lookup(ev, req))
         self.assertEqual(len(req.extra_user_content_parts), 1)
         self.assertIn("班味", req.extra_user_content_parts[0]["text"])
+
+    def test_looks_like_meme(self):
+        f = self.mod.looks_like_meme
+        self.assertTrue(f(".gif", 500_000, 0, 0))
+        self.assertFalse(f(".jpg", 900_000, 3000, 2000))
+        self.assertTrue(f(".jpg", 50_000, 200, 200))
+        self.assertFalse(f(".jpg", 400_000, 200, 200))
+        self.assertFalse(f(".jpg", 90_000, 1200, 900))
+
+    def test_photo_save_regex(self):
+        r = self.mod.PHOTO_SAVE_RE
+        self.assertTrue(r.search("把这张存下来"))
+        self.assertTrue(r.search("帮我保存这张照片"))
+        self.assertFalse(r.search("把刚才那张表情包发我看看"))
+
+    def test_store_photo_and_send_latest(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        raw = b"\xff\xd8\xff" + b"p" * 5000
+        src = self._gif("pic.jpg", raw)
+        rec = asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
+        self.assertIsNotNone(rec)
+        self.assertTrue(Path(rec["path"]).exists())
+        self.assertTrue(rec["path"].endswith(".jpg"))
+        self.assertIn("day", rec)
+
+        ev = FakeEvent()
+        out = json.loads(asyncio.run(plugin.send_photo_tool(ev, "")))
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["sent"], rec["id"])
+        self.assertEqual(len(ev.sent), 1)
+
+    def test_store_photo_dedupe(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("dup2.jpg", b"\xff\xd8\xff" + b"d" * 3000)
+        a = asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
+        b = asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
+        self.assertEqual(a["id"], b["id"])
+        self.assertEqual(len(plugin.photos), 1)
+
+    def test_list_photos(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("lp.jpg", b"\xff\xd8\xff" + b"l" * 2000)
+        asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
+        out = json.loads(asyncio.run(plugin.list_photos_tool(FakeEvent(), 5)))
+        self.assertEqual(out["total"], 1)
+        self.assertEqual(len(out["items"]), 1)
+
+    def test_send_photo_unknown(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        out = json.loads(asyncio.run(plugin.send_photo_tool(FakeEvent(), "deadbeef0000")))
+        self.assertFalse(out["ok"])
+
+    def test_photo_rule_does_not_trigger_face_send(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("f.gif", b"GIF89a-f" + b"f" * 20)
+        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
+        ev = FakeEvent(text="把这张存下来")
+        asyncio.run(plugin.regex_send_face(ev))
+        self.assertEqual(ev.sent, [])
+        self.assertFalse(ev.stopped)
 
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})
