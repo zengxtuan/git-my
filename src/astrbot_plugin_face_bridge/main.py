@@ -653,6 +653,82 @@ class FaceBridge(Star):
         )
         event.stop_event()
 
+    # ------------------------------------------------------------------ tools
+    # 只保留一个工具：让模型自己判断"用户要哪张图"，插件负责执行。
+    # 之前一口气挂 6 个工具把 flash 压崩了（DSML），所以这里刻意只留 1 个。
+
+    def _match_media_by_text(self, want: str) -> dict | None:
+        """按描述在表情/照片里找最像的一张（先查描述，再查编号前缀）。"""
+        want = (want or "").strip()
+        if not want:
+            return None
+        pool = []
+        for rec in self.index.values():
+            pool.append({**rec, "kind": "face"})
+        for rec in self.photos.values():
+            pool.append({**rec, "kind": "photo"})
+        # 1) 描述包含
+        for rec in pool:
+            cap = str(rec.get("caption") or "")
+            if cap and any(tok and tok in cap for tok in re.split(r"[，,、\s]+", want)):
+                return rec
+        # 2) 编号前缀
+        for key in list(self.index) + list(self.photos):
+            if key.startswith(want) and len(want) >= 6:
+                return {**(self.index.get(key) or self.photos.get(key)), "kind": "face" if key in self.index else "photo"}
+        return None
+
+    @llm_tool(name="send_media")
+    async def send_media_tool(self, event: AstrMessageEvent, want: str = "") -> str:
+        """用户想看某张图时调用它，把图直接发给他。
+
+        用户说"发我看看""把刚才那张发我""那天的壁纸呢""你存的图给我看看"
+        这类话时都调用本工具，不要用文字回答"发了"，直接调。
+
+        Args:
+            want(string): 用户想要的那张图是什么样，用他的话填，比如"刚才那张""傲娇脸""昨天的壁纸""照片"；实在没有线索就留空
+
+        Returns:
+            JSON，说明发了哪一张。
+        """
+        want = str(want or "").strip()
+        wants_photo = any(k in want for k in ("照片", "壁纸", "截图", "相片", "原图"))
+
+        rec = self._match_media_by_text(want)
+        if rec:
+            path = Path(rec.get("path", ""))
+            if path.exists():
+                await event.send(MessageChain([Image.fromFileSystem(path)]))
+                self.recent_media = {
+                    "id": rec["id"],
+                    "path": str(path),
+                    "kind": rec.get("kind", "face"),
+                }
+                logger.info("[face_bridge] send_media 命中描述: %s (%s)", rec["id"], rec.get("kind"))
+                return json.dumps(
+                    {"ok": True, "sent": rec["id"], "kind": rec.get("kind")},
+                    ensure_ascii=False,
+                )
+
+        if wants_photo and self.photos:
+            res = await self._send_photo(event, "")
+            return json.dumps(res, ensure_ascii=False)
+
+        if self.recent_media:
+            path = Path(self.recent_media.get("path", ""))
+            if path.exists():
+                await event.send(MessageChain([Image.fromFileSystem(path)]))
+                logger.info(
+                    "[face_bridge] send_media 发刚才那张: %s", self.recent_media.get("id")
+                )
+                return json.dumps(
+                    {"ok": True, "sent": self.recent_media.get("id"), "kind": self.recent_media.get("kind")},
+                    ensure_ascii=False,
+                )
+
+        ok = await self._send_latest(event, reason="tool")
+        return json.dumps({"ok": bool(ok)}, ensure_ascii=False)
+
     @filter.regex(_SEND_PATTERN)
     async def regex_send_face(self, event: AstrMessageEvent):
         text = event.get_message_str() or ""
