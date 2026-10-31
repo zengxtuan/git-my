@@ -115,6 +115,28 @@ def _now_day() -> str:
     return time.strftime("%Y-%m-%d")
 
 
+CAPTION_PROMPT = "用一句中文说清这张图的画面主体和情绪或梗，30 字以内，不要客套。"
+
+
+def _image_data_url(path: Path, max_side: int = 512) -> str:
+    """把图片压成 base64 data URL（体积小、省 token）。"""
+    import base64
+    import io
+
+    try:
+        from PIL import Image as PILImage
+
+        with PILImage.open(path) as im:
+            im = im.convert("RGB")
+            im.thumbnail((max_side, max_side))
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=80)
+            return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        raw = path.read_bytes()
+        return "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+
+
 class FaceBridge(Star):
     """大肥鱼的表情/照片桥。"""
 
@@ -293,7 +315,67 @@ class FaceBridge(Star):
         self._save_media()
         self.recent_media = {"id": mid, "path": str(dest), "kind": kind}
         logger.info("[face_bridge] 入库 %s (%s, %dx%d, %d bytes)", mid, kind, w, h, size)
+
+        cap = await self._caption(dest)
+        if cap:
+            rec["caption"] = cap
+            self._save_media()
         return rec
+
+    async def _caption(self, path: Path) -> str:
+        """让视觉模型给这张图写一句描述，用于以后按内容找图。"""
+        key = self._deepseek_key()
+        if not key or not path.exists():
+            return ""
+        try:
+            import aiohttp
+
+            payload = {
+                "model": "deepseek-flash",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": CAPTION_PROMPT},
+                            {"type": "image_url", "image_url": {"url": _image_data_url(path)}},
+                        ],
+                    }
+                ],
+                "max_tokens": 200,
+                "thinking": {"type": "disabled"},
+            }
+            tm = aiohttp.ClientTimeout(total=25)
+            async with aiohttp.ClientSession(timeout=tm) as sess:
+                async with sess.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning("[face_bridge] 生成描述 HTTP %s", resp.status)
+                        return ""
+                    data = await resp.json()
+            text = (data["choices"][0]["message"].get("content") or "").strip()
+            if text:
+                logger.info("[face_bridge] 描述已生成: %s", text[:40])
+            return text[:80]
+        except Exception as e:
+            logger.warning("[face_bridge] 生成描述失败: %s", e)
+            return ""
+
+    def _deepseek_key(self) -> str:
+        try:
+            cfg = self.context.get_config()
+            for src in cfg.get("provider_sources", []):
+                keys = src.get("key") or []
+                if keys:
+                    return str(keys[0])
+        except Exception:
+            pass
+        return ""
 
     async def _add_to_qq_face(self, event: AstrMessageEvent, path: Path) -> tuple[bool, str]:
         bot = getattr(event, "bot", None)
