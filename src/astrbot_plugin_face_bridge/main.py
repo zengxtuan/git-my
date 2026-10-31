@@ -115,6 +115,25 @@ def _now_day() -> str:
     return time.strftime("%Y-%m-%d")
 
 
+def _ngrams(text: str, n: int = 2) -> set[str]:
+    """中文没空格，用 2-gram 做粗匹配。"""
+    s = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9]", "", text or "")
+    if len(s) < n:
+        return {s} if s else set()
+    return {s[i : i + n] for i in range(len(s) - n + 1)}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    import math
+
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if not na or not nb:
+        return 0.0
+    return dot / (na * nb)
+
+
 CAPTION_PROMPT = "用一句中文说清这张图的画面主体和情绪或梗，30 字以内，不要客套。"
 
 
@@ -157,6 +176,7 @@ class FaceBridge(Star):
             self.config.get("photo_max_bytes", 20971520) or 20971520
         )
         self.recent_media: dict | None = None
+        self._caption_vec: dict[str, list[float]] = {}
 
         faces = sum(1 for r in self.media.values() if r.get("kind") == "face")
         logger.info("[face_bridge] loaded: %d faces / %d photos", faces, len(self.media) - faces)
@@ -223,21 +243,83 @@ class FaceBridge(Star):
         return max(pool, key=lambda r: r.get("added", 0))
 
     def find(self, want: str, kind: str | None = None) -> dict | None:
-        """按用户的话找图：先比描述，再比编号前缀。"""
+        """同步兜底匹配：2-gram 重叠 + 编号前缀（embedding 不可用时用）。"""
         want = (want or "").strip()
         if not want:
             return None
         pool = [r for r in self.media.values() if kind is None or r.get("kind") == kind]
-        tokens = [t for t in re.split(r"[，,、\s]+", want) if len(t) >= 2]
+        want_grams = _ngrams(want)
+        best, best_score = None, 0
         for rec in pool:
             cap = str(rec.get("caption") or "")
-            if cap and any(t in cap for t in tokens):
-                return rec
+            if not cap:
+                continue
+            score = len(want_grams & _ngrams(cap))
+            if score > best_score:
+                best, best_score = rec, score
+        if best is not None and best_score >= 2:
+            return best
         if len(want) >= 6:
             for key, rec in self.media.items():
                 if key.startswith(want) and (kind is None or rec.get("kind") == kind):
                     return rec
         return None
+
+    async def afind(self, want: str, kind: str | None = None) -> dict | None:
+        """优先用本地 embedding 做语义匹配，失败退回 2-gram。"""
+        want = (want or "").strip()
+        if not want:
+            return None
+        pool = [r for r in self.media.values() if kind is None or r.get("kind") == kind]
+        pool = [r for r in pool if str(r.get("caption") or "").strip()]
+        if pool:
+            vec = await self._embed(want)
+            if vec:
+                scored = []
+                for rec in pool:
+                    cap = str(rec.get("caption"))
+                    cvec = self._caption_vec.get(cap) or await self._embed(cap)
+                    if not cvec:
+                        continue
+                    self._caption_vec[cap] = cvec
+                    # 向量相似度 + 字面命中加成（"委屈"这种实词命中要压过语义近似）
+                    base = _cosine(vec, cvec)
+                    overlap = len(_ngrams(want) & _ngrams(cap))
+                    score = base + min(overlap * 0.08, 0.35)
+                    scored.append((score, base, rec))
+                if scored:
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    top, base, rec = scored[0]
+                    logger.info(
+                        "[face_bridge] 匹配 %.3f(基础%.3f) -> %s",
+                        top,
+                        base,
+                        str(rec.get("caption", ""))[:24],
+                    )
+                    if top >= 0.45:
+                        return rec
+        # 退回 2-gram / 编号
+        rec = self.find(want, kind=kind)
+        if rec is None and kind is not None:
+            rec = self.find(want)
+        return rec
+
+    async def _embed(self, text: str) -> list[float] | None:
+        try:
+            import aiohttp
+
+            tm = aiohttp.ClientTimeout(total=8)
+            async with aiohttp.ClientSession(timeout=tm) as sess:
+                async with sess.post(
+                    "http://127.0.0.1:8484/v1/embeddings",
+                    json={"input": text[:200]},
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+            return list(data["data"][0]["embedding"])
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ 入库
 
@@ -410,20 +492,21 @@ class FaceBridge(Star):
     ) -> dict:
         """按 want 找最合适的一张发出去。"""
         wants_photo = any(k in want for k in ("照片", "壁纸", "截图", "相片", "原图"))
-        kind = "photo" if wants_photo else None
+        wants_face = "表情" in want
+        kind = "photo" if wants_photo else ("face" if wants_face else None)
 
-        rec = self.find(want, kind=kind)
-        if rec is None and not wants_photo:
-            rec = self.find(want)
+        rec = await self.afind(want, kind=kind)
         if rec and await self._deliver(event, rec, reason):
             return {"ok": True, "sent": rec["id"], "kind": rec.get("kind")}
 
+        # 兜底也要守住类型：说"表情包"时别把照片甩过去
         if self.recent_media:
-            rec = self.media.get(self.recent_media.get("id") or "")
-            if rec and await self._deliver(event, rec, f"{reason}/recent"):
-                return {"ok": True, "sent": rec["id"], "kind": rec.get("kind")}
+            cand = self.media.get(self.recent_media.get("id") or "")
+            if cand and (kind is None or cand.get("kind") == kind):
+                if await self._deliver(event, cand, f"{reason}/recent"):
+                    return {"ok": True, "sent": cand["id"], "kind": cand.get("kind")}
 
-        rec = self.latest(kind) or self.latest()
+        rec = self.latest(kind) or (self.latest() if kind is None else None)
         if rec and await self._deliver(event, rec, f"{reason}/latest"):
             return {"ok": True, "sent": rec["id"], "kind": rec.get("kind")}
         return {"ok": False, "reason": "库里还没有图"}
