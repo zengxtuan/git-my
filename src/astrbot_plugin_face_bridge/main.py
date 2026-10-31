@@ -76,9 +76,13 @@ PHOTO_SAVE_RE = re.compile(
 # 用户说到这些词，就是指照片/壁纸，而不是表情包
 PHOTO_WORD_RE = re.compile(r"(照片|壁纸|截图|相片|大图|原图)")
 # "发我看看"这类索图请求（装饰器和函数体共用，函数里再校验一次更稳）
-SEND_REQUEST_RE = re.compile(
+# 注意"发这个给我""把这个还我"这种指代式说法也要认，用户最常这么讲
+_SEND_PATTERN = (
     r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张|壁纸)"
+    r"|((发|还|回|给)[^，。！？]{0,6}(这个|这张|那张|它|原图|表情|照片|图))"
+    r"|((这个|这张|那张|它)[^，。！？]{0,4}(还|发|回)(我|给我|来))"
 )
+SEND_REQUEST_RE = re.compile(_SEND_PATTERN)
 
 
 def strip_dsml(text: str) -> tuple[str, int]:
@@ -224,6 +228,11 @@ class FaceBridge(Star):
         pid = md5[:12]
         if pid in self.photos:
             rec = self.photos[pid]
+            self.recent_media = {
+                "id": pid,
+                "path": rec.get("path", ""),
+                "kind": "photo",
+            }
             logger.info("[face_bridge] 照片已存在: %s", pid)
             return rec
         w, h = _image_size(src)
@@ -302,6 +311,11 @@ class FaceBridge(Star):
         face_id = md5[:12]
         if face_id in self.index:
             rec = self.index[face_id]
+            self.recent_media = {
+                "id": face_id,
+                "path": rec.get("path", ""),
+                "kind": "face",
+            }
             logger.info("[face_bridge] 已存在，跳过入库: %s", face_id)
             return rec
         dest = self.img_dir / f"{face_id}{ext}"
@@ -639,7 +653,7 @@ class FaceBridge(Star):
         )
         event.stop_event()
 
-    @filter.regex(r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张|壁纸)")
+    @filter.regex(_SEND_PATTERN)
     async def regex_send_face(self, event: AstrMessageEvent):
         text = event.get_message_str() or ""
         if len(text) > 40:
