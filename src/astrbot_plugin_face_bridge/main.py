@@ -75,6 +75,10 @@ PHOTO_SAVE_RE = re.compile(
 )
 # 用户说到这些词，就是指照片/壁纸，而不是表情包
 PHOTO_WORD_RE = re.compile(r"(照片|壁纸|截图|相片|大图|原图)")
+# "发我看看"这类索图请求（装饰器和函数体共用，函数里再校验一次更稳）
+SEND_REQUEST_RE = re.compile(
+    r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张|壁纸)"
+)
 
 
 def strip_dsml(text: str) -> tuple[str, int]:
@@ -143,6 +147,8 @@ class FaceBridge(Star):
         self.photo_dir.mkdir(parents=True, exist_ok=True)
         self.photo_index_path = self.root / PHOTO_INDEX_NAME
         self.photos: dict[str, dict] = self._load_photos()
+        # 刚刚在聊的那张图（含糊的"发我看看"就发它，而不是一律发最新照片）
+        self.recent_media: dict | None = None
 
         self.max_bytes = int(self.config.get("max_send_bytes", 5242880) or 5242880)
         # 照片/壁纸往往是几 MB 的大图，单独给一个更宽松的上限
@@ -247,6 +253,7 @@ class FaceBridge(Star):
         }
         self.photos[pid] = rec
         self._save_photos()
+        self.recent_media = {"id": pid, "path": str(dest), "kind": "photo"}
         logger.info(
             "[face_bridge] 照片已存 %s (%dx%d, %d bytes)", pid, w, h, size
         )
@@ -316,6 +323,7 @@ class FaceBridge(Star):
         }
         self.index[face_id] = rec
         self._save_index()
+        self.recent_media = {"id": face_id, "path": str(dest), "kind": "face"}
         return rec
 
     # ------------------------------------------------------------------ hooks
@@ -427,6 +435,26 @@ class FaceBridge(Star):
         except Exception as e:
             logger.error("[face_bridge] 按需语音失败: %s", e, exc_info=True)
 
+    @filter.on_llm_request(priority=3)
+    async def inject_recent_media_hint(self, event: AstrMessageEvent, req):
+        """把"刚才已经发过哪张图"告诉模型，免得它回头问"哪张啊"。"""
+        rec = self.recent_media
+        if not rec:
+            return
+        kind = "表情包" if rec.get("kind") == "face" else "照片"
+        note = (
+            f"【前提：你刚已经把那{kind}发出去了（编号 {rec.get('id')}），"
+            "不要再问用户是哪张，也不要再重复发同一张，除非他明确要重发】"
+        )
+        parts = getattr(req, "extra_user_content_parts", None)
+        try:
+            if isinstance(parts, list):
+                parts.append({"type": "text", "text": note})
+            else:
+                req.prompt = (req.prompt or "") + "\n\n" + note
+        except Exception:
+            return
+
     @filter.on_llm_request(priority=2)
     async def auto_lookup(self, event: AstrMessageEvent, req):
         """问梗/问生词的短消息，先联网查一次再把资料塞进本轮请求。"""
@@ -535,6 +563,7 @@ class FaceBridge(Star):
             return False
         logger.info("[face_bridge] 规则命中(%s) -> 发送最新图 %s", reason, rec["id"])
         await event.send(MessageChain([Image.fromFileSystem(path)]))
+        self.recent_media = {"id": rec["id"], "path": str(path), "kind": "face"}
         return True
 
     @filter.command("发图")
@@ -566,6 +595,7 @@ class FaceBridge(Star):
         if not path.exists():
             return {"ok": False, "reason": "照片文件丢了"}
         await event.send(MessageChain([Image.fromFileSystem(path)]))
+        self.recent_media = {"id": rec["id"], "path": str(path), "kind": "photo"}
         logger.info("[face_bridge] 发照片 %s (%s)", rec["id"], rec.get("day", ""))
         return {"ok": True, "sent": rec["id"], "day": rec.get("day", "")}
 
@@ -614,18 +644,32 @@ class FaceBridge(Star):
         text = event.get_message_str() or ""
         if len(text) > 40:
             return
+        if not SEND_REQUEST_RE.search(text):
+            return
         if PHOTO_SAVE_RE.search(text):  # "把这张存下来"不该触发发图
             return
         asks_photo = bool(PHOTO_WORD_RE.search(text))
         asks_face = "表情" in text
-        vague = not asks_photo and not asks_face
-        if asks_photo or (vague and self.photos):
+
+        # "发我看看""发我啊"这种含糊请求，发刚刚在聊的那张，别一律发最新照片
+        if not asks_photo and not asks_face and self.recent_media:
+            rec = self.recent_media
+            path = Path(rec.get("path", ""))
+            if path.exists():
+                await event.send(MessageChain([Image.fromFileSystem(path)]))
+                logger.info(
+                    "[face_bridge] 含糊请求 -> 发刚才那张 %s (%s)",
+                    rec.get("id"),
+                    rec.get("kind"),
+                )
+                event.stop_event()
+                return
+
+        if asks_photo:
             res = await self._send_photo(event, "")
             if res.get("ok"):
                 event.stop_event()
-                return
-            if asks_photo:
-                return
+            return
         if not asks_face and not any(k in text for k in ("图", "那张", "这张")):
             return
         ok = await self._send_latest(event, reason="regex")

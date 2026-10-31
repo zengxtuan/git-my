@@ -540,6 +540,36 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertEqual(len(ev.sent), 1)
         self.assertTrue(ev.stopped)
 
+    def test_vague_request_sends_the_one_just_discussed(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        # 先在相册放一张照片（旧逻辑会一直发它）
+        photo_src = self._gif("old_photo.jpg", b"\xff\xd8\xff" + b"o" * 4000)
+        asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(photo_src)))
+        # 再放进一张表情（这才是"刚才在聊的那张"）
+        face_src = self._gif("now.gif", b"GIF89a-now" + b"n" * 20)
+        face_rec = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(face_src)))
+
+        ev = FakeEvent(text="发我看看啊")
+        asyncio.run(plugin.regex_send_face(ev))
+        self.assertEqual(len(ev.sent), 1)
+        self.assertTrue(ev.stopped)
+        self.assertEqual(plugin.recent_media["id"], face_rec["id"])
+
+    def test_inject_recent_media_hint(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.inject_recent_media_hint(FakeEvent(), req))
+        self.assertEqual(req.extra_user_content_parts, [])
+
+        plugin.recent_media = {"id": "abc123", "path": "/tmp/x.gif", "kind": "face"}
+        asyncio.run(plugin.inject_recent_media_hint(FakeEvent(), req))
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        self.assertIn("abc123", req.extra_user_content_parts[0]["text"])
+
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})
         import asyncio
