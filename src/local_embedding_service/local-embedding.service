@@ -1,0 +1,21 @@
+[Unit]
+Description=Local Embedding Service (BAAI/bge-small-zh-v1.5, OpenAI-compatible)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/embed-svc
+Environment=HF_ENDPOINT=https://hf-mirror.com
+Environment=EMBED_MODEL=BAAI/bge-small-zh-v1.5
+Environment=EMBED_CACHE=/opt/embed-svc/models
+Environment=OMP_NUM_THREADS=2
+ExecStart=/opt/embed-svc/venv/bin/python /opt/embed-svc/app.py
+Restart=always
+RestartSec=3
+# 内存紧张，给个约束，避免把整机拖垮
+MemoryHigh=1200M
+MemoryMax=1500M
+
+[Install]
+WantedBy=multi-user.target
