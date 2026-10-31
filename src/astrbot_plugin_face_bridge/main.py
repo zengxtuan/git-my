@@ -616,128 +616,19 @@ class FaceBridge(Star):
             return
         if PHOTO_SAVE_RE.search(text):  # "把这张存下来"不该触发发图
             return
-        if PHOTO_WORD_RE.search(text):  # 说的是照片/壁纸，就走相册
+        asks_photo = bool(PHOTO_WORD_RE.search(text))
+        asks_face = "表情" in text
+        vague = not asks_photo and not asks_face
+        if asks_photo or (vague and self.photos):
             res = await self._send_photo(event, "")
             if res.get("ok"):
                 event.stop_event()
-            return
-        if not any(k in text for k in ("图", "表情", "那张", "这张")):
+                return
+            if asks_photo:
+                return
+        if not asks_face and not any(k in text for k in ("图", "那张", "这张")):
             return
         ok = await self._send_latest(event, reason="regex")
         if ok:
             event.stop_event()
 
-    # ------------------------------------------------------------------ tools
-
-    @llm_tool(name="save_face")
-    async def save_face_tool(self, event: AstrMessageEvent) -> str:
-        """把本条消息里的图片存进 QQ 收藏表情。
-
-        用户发来一张图并希望“收下/存起来/以后用”时调用。
-        本条消息没有图片时直接返回失败说明。
-
-        Returns:
-            结果说明，含表情 ID。
-        """
-        images = [c for c in event.get_messages() if isinstance(c, Image)]
-        if not images:
-            return json.dumps(
-                {"ok": False, "reason": "这条消息里没有图片"}, ensure_ascii=False
-            )
-        out = []
-        for img in images:
-            rec = await self._store_image(event, img)
-            if rec is None:
-                continue
-            if not rec.get("in_qq_face"):
-                ok, info = await self._add_to_qq_face(event, Path(rec["path"]))
-                rec["in_qq_face"] = ok
-                rec["qq_result"] = info
-                self._save_index()
-            out.append(
-                {
-                    "id": rec["id"],
-                    "saved_to_qq_face": rec.get("in_qq_face", False),
-                }
-            )
-        return json.dumps(
-            {"ok": bool(out), "results": out}, ensure_ascii=False
-        )
-
-    @llm_tool(name="send_face")
-    async def send_face_tool(self, event: AstrMessageEvent, face_id: str = "") -> str:
-        """把表情库里的一张图直接发出去。
-
-        想发表情时调用一次即可。不填 ID 就发最近存进来的那一张，
-        所以用户说“把你刚收的那张发我”时直接调用、不用先查列表。
-
-        Args:
-            face_id(string): 表情 ID，可留空；留空表示发最新的那一张
-
-        Returns:
-            发送结果说明。
-        """
-        face_id = str(face_id or "").strip().strip("`")
-        logger.info("[face_bridge] LLM 调用 send_face, face_id=%r", face_id)
-        if not face_id or face_id.lower() in ("latest", "new", "recent", "0"):
-            latest = sorted(
-                self.index.values(), key=lambda r: r.get("added", 0), reverse=True
-            )
-            if not latest:
-                return json.dumps(
-                    {"ok": False, "reason": "表情库是空的"}, ensure_ascii=False
-                )
-            rec = latest[0]
-        else:
-            rec = self.index.get(face_id)
-            if not rec:
-                hits = [k for k in self.index if k.startswith(face_id)][:3]
-                if len(hits) == 1:
-                    rec = self.index[hits[0]]
-                else:
-                    return json.dumps(
-                        {"ok": False, "reason": f"没有 ID 为 {face_id} 的表情"},
-                        ensure_ascii=False,
-                    )
-        path = Path(rec["path"])
-        if not path.exists():
-            return json.dumps(
-                {"ok": False, "reason": "文件已丢失"}, ensure_ascii=False
-            )
-        await event.send(MessageChain([Image.fromFileSystem(path)]))
-        return json.dumps({"ok": True, "sent": rec["id"]}, ensure_ascii=False)
-
-    @llm_tool(name="list_faces")
-    async def list_faces_tool(self, event: AstrMessageEvent, limit: int = 12) -> str:
-        """列出表情库里最新的若干张，返回 ID 列表。
-
-        不知道有什么图、或用户问“你有哪些表情”时调用。
-
-        Args:
-            limit(number): 返回条数，最多 30
-
-        Returns:
-            JSON，含 ID、大小、是否已进 QQ 收藏。
-        """
-        try:
-            n = max(1, min(int(limit), 30))
-        except Exception:
-            n = 12
-        items = sorted(
-            self.index.values(), key=lambda r: r.get("added", 0), reverse=True
-        )[:n]
-        return json.dumps(
-            {
-                "total": len(self.index),
-                "items": [
-                    {
-                        "id": r["id"],
-                        "size": r.get("size", 0),
-                        "in_qq_face": r.get("in_qq_face", False),
-                        "caption": r.get("caption", ""),
-                    }
-                    for r in items
-                ],
-            },
-            ensure_ascii=False,
-        )

@@ -261,25 +261,16 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertEqual(a["id"], b["id"])
         self.assertEqual(len(plugin.index), 1)
 
-    def test_send_face_unknown_id(self):
+    def test_send_latest_returns_false_on_empty_library(self):
         plugin = self.mod.FaceBridge(None, {})
         import asyncio
 
-        out = json.loads(asyncio.run(plugin.send_face_tool(FakeEvent(), "deadbeefcafe")))
-        self.assertFalse(out["ok"])
+        ev = FakeEvent()
+        ok = asyncio.run(plugin._send_latest(ev, "test"))
+        self.assertFalse(ok)
+        self.assertEqual(len(ev.sent), 1)  # 会回一句"库里还没有图呢"
 
-    def test_send_face_by_id(self):
-        plugin = self.mod.FaceBridge(None, {})
-        import asyncio
-
-        src = self._gif("send.gif", b"GIF89a-send" + b"q" * 12)
-        rec = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        event = FakeEvent()
-        out = json.loads(asyncio.run(plugin.send_face_tool(event, rec["id"])))
-        self.assertTrue(out["ok"])
-        self.assertEqual(len(event.sent), 1)
-
-    def test_send_face_empty_id_sends_latest(self):
+    def test_send_latest_picks_newest(self):
         plugin = self.mod.FaceBridge(None, {})
         import asyncio
 
@@ -291,9 +282,8 @@ class FaceBridgeTest(unittest.TestCase):
         rec_new["added"] = 2
 
         event = FakeEvent()
-        out = json.loads(asyncio.run(plugin.send_face_tool(event, "")))
-        self.assertTrue(out["ok"])
-        self.assertEqual(out["sent"], rec_new["id"])
+        ok = asyncio.run(plugin._send_latest(event, "test"))
+        self.assertTrue(ok)
         self.assertEqual(len(event.sent), 1)
 
     def test_regex_rule_sends_latest_and_stops(self):
@@ -556,9 +546,11 @@ class FaceBridgeTest(unittest.TestCase):
 
         src = self._gif("list.gif", b"GIF89a-list" + b"w" * 4)
         asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        out = json.loads(asyncio.run(plugin.list_faces_tool(FakeEvent(), 5)))
-        self.assertGreaterEqual(out["total"], 1)
-        self.assertIn("id", out["items"][0])
+        items = sorted(
+            plugin.index.values(), key=lambda r: r.get("added", 0), reverse=True
+        )
+        self.assertGreaterEqual(len(items), 1)
+        self.assertIn("id", items[0])
 
     def test_auto_archive_hook_disabled(self):
         plugin = self.mod.FaceBridge(None, {"auto_archive": False})
