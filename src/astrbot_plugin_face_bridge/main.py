@@ -61,6 +61,13 @@ LOOKUP_RE = re.compile(
     r"(梗|什么意思|啥意思|这是啥|怎么理解|什么鬼|啥啊|啥梗|啥玩意|啥东西|什么梗)"
 )
 ABBR_RE = re.compile(r"^[a-zA-Z]{3,12}$")
+# 纯寒暄/应答不触发搜索，避免每句话都带一份资料进上下文
+GREETING_RE = re.compile(
+    r"^(在吗|在不在|在么|你好|您好|早|早安|早上好|晚安|睡了|睡了没|哈+|呵+|嘿+|"
+    r"嗯+|哦+|噢+|行|好|好的|ok|OK|收到|吃了没|吃了吗|忙吗|忙不忙|累|累不累|"
+    r"再见|拜拜|哈哈+|在干嘛|干嘛呢)[啊呀哦的呢啦吧嘛]*$"
+)
+LOOKUP_MAX_LEN = 30
 
 # deepseek-flash 会把内部工具标记当正文吐出来，竖线是全角 U+FF5C
 DSML_RE = re.compile(
@@ -622,25 +629,44 @@ class FaceBridge(Star):
 
     @filter.on_llm_request(priority=2)
     async def auto_lookup(self, event: AstrMessageEvent, req):
-        """问梗/问生词的短消息，先联网查一次。"""
+        """先联网查一次再回答。
+
+        豆包之类之所以"懂新梗"，是因为它默认带联网；我们这边模型自己不会主动搜，
+        所以这里改成默认触发：短消息、不是纯寒暄，就先搜一遍当参考。
+        """
         try:
             text = (event.get_message_str() or "").strip()
         except Exception:
             return
-        if not text or len(text) > 60:
+        if not text or len(text) > LOOKUP_MAX_LEN:
             return
-        if not (LOOKUP_RE.search(text) or ABBR_RE.fullmatch(text)):
+        if text.startswith("/") or text.startswith("／"):
             return
+        strong = bool(LOOKUP_RE.search(text) or ABBR_RE.fullmatch(text))
+        if not strong:
+            if not self.config.get("lookup_every_message", True):
+                return
+            if GREETING_RE.match(text):
+                return
         key = self._websearch_key()
         if not key:
             return
-        summary = await self._search_web(text, key)
+        summary = await self._search_web(text, key, max_results=3 if strong else 2)
         if not summary:
             return
-        self._append_context(
-            req, "【刚联网查到的资料，别照抄原话，用你自己的口气讲】：\n" + summary
+        hint = (
+            "【刚联网查到的东西，只在确实相关时参考，用你自己的口气讲，别照搬；"
+            "和用户这句话无关就直接忽略】：\n"
+            if not strong
+            else "【刚联网查到的资料，别照抄原话，用你自己的口气讲】：\n"
         )
-        logger.info("[face_bridge] 梗检索命中 %r -> %d 字", text[:20], len(summary))
+        self._append_context(req, hint + summary)
+        logger.info(
+            "[face_bridge] 联网检索(%s) %r -> %d 字",
+            "关键词" if strong else "默认",
+            text[:20],
+            len(summary),
+        )
 
     @staticmethod
     def _append_context(req, note: str) -> None:
@@ -661,7 +687,9 @@ class FaceBridge(Star):
         except Exception:
             return ""
 
-    async def _search_web(self, query: str, key: str, timeout: float = 6.0) -> str:
+    async def _search_web(
+        self, query: str, key: str, timeout: float = 6.0, max_results: int = 3
+    ) -> str:
         try:
             import aiohttp
 
@@ -669,7 +697,7 @@ class FaceBridge(Star):
             async with aiohttp.ClientSession(timeout=tm) as sess:
                 async with sess.post(
                     "https://api.deepseek.com/v1/tools/search",
-                    json={"query": query[:100], "max_results": 3},
+                    json={"query": query[:100], "max_results": max_results},
                     headers={
                         "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
@@ -683,11 +711,11 @@ class FaceBridge(Star):
             logger.warning("[face_bridge] 检索失败: %s", e)
             return ""
         lines = []
-        for it in (data.get("results") or data.get("data") or [])[:3]:
+        for it in (data.get("results") or data.get("data") or [])[:max_results]:
             if not isinstance(it, dict):
                 continue
             title = str(it.get("title") or it.get("name") or "").strip()
-            body = re.sub(r"\s+", " ", str(it.get("content") or it.get("snippet") or ""))[:200]
+            body = re.sub(r"\s+", " ", str(it.get("content") or it.get("snippet") or ""))[:160]
             if title or body:
                 lines.append(f"- {title}：{body}")
         return "\n".join(lines)

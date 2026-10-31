@@ -511,7 +511,7 @@ class FaceBridgeTest(unittest.TestCase):
         plugin = self.mod.FaceBridge(None, {})
         plugin._websearch_key = lambda: "k"
 
-        async def fake_search(q, k, timeout=6.0):
+        async def fake_search(q, k, timeout=6.0, max_results=3):
             return "- 班味：职场疲惫状态"
 
         plugin._search_web = fake_search
@@ -520,14 +520,49 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertEqual(len(req.extra_user_content_parts), 1)
         self.assertIn("班味", req.extra_user_content_parts[0]["text"])
 
-    def test_auto_lookup_skips_normal_chat(self):
+    def test_auto_lookup_skips_greeting(self):
         import asyncio
 
         plugin = self.mod.FaceBridge(None, {})
         plugin._websearch_key = lambda: "k"
         calls = []
 
-        async def fake_search(q, k, timeout=6.0):
+        async def fake_search(q, k, timeout=6.0, max_results=3):
+            calls.append(q)
+            return "- x"
+
+        plugin._search_web = fake_search
+        for greeting in ("在吗", "早", "晚安", "哈哈哈", "吃了吗"):
+            req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+            asyncio.run(plugin.auto_lookup(FakeEvent(text=greeting), req))
+            self.assertEqual(req.extra_user_content_parts, [], f"{greeting} 不该触发搜索")
+        self.assertEqual(calls, [])
+
+    def test_auto_lookup_triggers_on_short_chat(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        plugin._websearch_key = lambda: "k"
+        calls = []
+
+        async def fake_search(q, k, timeout=6.0, max_results=3):
+            calls.append(q)
+            return "- 相关内容"
+
+        plugin._search_web = fake_search
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.auto_lookup(FakeEvent(text="这也太kskbl了"), req))
+        self.assertEqual(calls, ["这也太kskbl了"])
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+
+    def test_auto_lookup_skips_normal_chat(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {"lookup_every_message": False})
+        plugin._websearch_key = lambda: "k"
+        calls = []
+
+        async def fake_search(q, k, timeout=6.0, max_results=3):
             calls.append(q)
             return "- x"
 
