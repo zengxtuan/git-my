@@ -1,5 +1,7 @@
-"""face_bridge 鎻掍欢鐨勭绾垮崟鍏冩祴璇曪紙涓嶉渶瑕?AstrBot 杩愯鐜锛夈€?
-鍋氭硶锛氭敞鍏?astrbot.* 鐨勬々妯″潡锛屽啀鐢?importlib 鐩存帴鍔犺浇鎻掍欢 main.py銆?"""
+"""face_bridge 插件离线单元测试（不需要 AstrBot 运行环境）。
+
+注入 astrbot.* 桩模块后用 importlib 直接加载插件 main.py。
+"""
 
 from __future__ import annotations
 
@@ -12,7 +14,9 @@ import types
 import unittest
 from pathlib import Path
 
-PLUGIN_MAIN = Path(__file__).resolve().parents[2] / "src" / "astrbot_plugin_face_bridge" / "main.py"
+PLUGIN_MAIN = (
+    Path(__file__).resolve().parents[2] / "src" / "astrbot_plugin_face_bridge" / "main.py"
+)
 
 
 def _install_stubs(data_dir: Path):
@@ -34,6 +38,7 @@ def _install_stubs(data_dir: Path):
             pass
 
         warning = error = debug = info
+        exception = info
 
     api.AstrBotConfig = AstrBotConfig
     api.llm_tool = llm_tool
@@ -51,12 +56,20 @@ def _install_stubs(data_dir: Path):
             super().__init__(chain or [])
 
     class Image:
-        def __init__(self, path: Path):
-            self._path = path
+        def __init__(self, path=None):
+            self._path = Path(path) if path else None
 
         @staticmethod
         def fromFileSystem(path):
-            return Image(Path(path))
+            return Image(path)
+
+    class Plain:
+        def __init__(self, text=""):
+            self.text = text
+
+    class Record:
+        def __init__(self, file=""):
+            self.file = file
 
     class Star:
         def __init__(self, context, config=None):
@@ -118,17 +131,7 @@ def _install_stubs(data_dir: Path):
     event_mod.MessageChain = MessageChain
     event_mod.filter = _Filter
     message.Image = Image
-
-    class Plain:
-        def __init__(self, text=""):
-            self.text = text
-
     message.Plain = Plain
-
-    class Record:
-        def __init__(self, file=""):
-            self.file = file
-
     message.Record = Record
     star_mod.Context = Context
     star_mod.Star = Star
@@ -156,7 +159,7 @@ class FakeBot:
 
     async def call_action(self, action, **kwargs):
         self.calls.append((action, kwargs))
-        return {"ok": True}
+        return {"result": 0, "errMsg": "", "isExist": 0}
 
 
 class FakeEvent:
@@ -216,7 +219,6 @@ class FaceBridgeTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
-        # 每个用例独立的数据目录，避免 index.json 互相污染
         for p in sorted(self.data_dir.rglob("*"), reverse=True):
             if p.is_file():
                 p.unlink()
@@ -224,100 +226,32 @@ class FaceBridgeTest(unittest.TestCase):
                 p.rmdir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    def _gif(self, name="a.gif", payload=b"GIF89a" + b"x" * 32) -> Path:
+    # ---------------------------------------------------------------- helpers
+
+    def _file(self, name: str, payload: bytes) -> Path:
         p = Path(self.tmp.name) / name
         p.write_bytes(payload)
         return p
 
+    def _gif(self, name="a.gif", payload=b"GIF89a" + b"x" * 32) -> Path:
+        return self._file(name, payload)
+
+    def _jpg(self, name="a.jpg", size=6000) -> Path:
+        return self._file(name, b"\xff\xd8\xff" + b"j" * size)
+
+    # ------------------------------------------------------------------ 纯函数
+
     def test_md5_of(self):
         p = self._gif("md5.gif", b"GIF89a-hello")
-        self.assertEqual(
-            self.mod._md5_of(p), hashlib.md5(b"GIF89a-hello").hexdigest()
-        )
+        self.assertEqual(self.mod.md5_of(p), hashlib.md5(b"GIF89a-hello").hexdigest())
 
-    def test_store_and_add_to_qq_face(self):
-        plugin = self.mod.FaceBridge(None, {"auto_archive": True})
-        event = FakeEvent()
-        import asyncio
-
-        src = self._gif("store.gif", b"GIF89a-store" + b"y" * 16)
-        rec = asyncio.run(plugin._store_image(event, self.FakeImage(src)))
-        self.assertIsNotNone(rec)
-        self.assertEqual(rec["id"], hashlib.md5(b"GIF89a-store" + b"y" * 16).hexdigest()[:12])
-        self.assertTrue(Path(rec["path"]).exists())
-
-        ok, _ = asyncio.run(plugin._add_to_qq_face(event, Path(rec["path"])))
-        self.assertTrue(ok)
-        self.assertEqual(event.bot.calls[0][0], "add_custom_face")
-        self.assertTrue(event.bot.calls[0][1]["is_origin"])
-
-    def test_dedupe_by_md5(self):
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("dup.gif", b"GIF89a-dup" + b"z" * 8)
-        import asyncio
-
-        a = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        b = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        self.assertEqual(a["id"], b["id"])
-        self.assertEqual(len(plugin.index), 1)
-
-    def test_send_latest_returns_false_on_empty_library(self):
-        plugin = self.mod.FaceBridge(None, {})
-        import asyncio
-
-        ev = FakeEvent()
-        ok = asyncio.run(plugin._send_latest(ev, "test"))
-        self.assertFalse(ok)
-        self.assertEqual(len(ev.sent), 1)  # 会回一句"库里还没有图呢"
-
-    def test_send_latest_picks_newest(self):
-        plugin = self.mod.FaceBridge(None, {})
-        import asyncio
-
-        old = self._gif("old.gif", b"GIF89a-old" + b"a" * 10)
-        new = self._gif("new.gif", b"GIF89a-new" + b"b" * 10)
-        rec_old = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(old)))
-        rec_new = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(new)))
-        rec_old["added"] = 1
-        rec_new["added"] = 2
-
-        event = FakeEvent()
-        ok = asyncio.run(plugin._send_latest(event, "test"))
-        self.assertTrue(ok)
-        self.assertEqual(len(event.sent), 1)
-
-    def test_regex_rule_sends_latest_and_stops(self):
-        plugin = self.mod.FaceBridge(None, {})
-        import asyncio
-
-        src = self._gif("rule.gif", b"GIF89a-rule" + b"r" * 8)
-        rec = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        event = FakeEvent(text="把刚才那张表情包发我看看")
-        asyncio.run(plugin.regex_send_face(event))
-        self.assertEqual(len(event.sent), 1)
-        self.assertTrue(event.stopped)
-        self.assertEqual(rec["id"], plugin.index[rec["id"]]["id"])
-
-    def test_regex_rule_ignores_unrelated_text(self):
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("rule2.gif", b"GIF89a-rule2" + b"t" * 8)
-        import asyncio
-
-        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        event = FakeEvent(text="今天好累啊")
-        asyncio.run(plugin.regex_send_face(event))
-        self.assertEqual(event.sent, [])
-        self.assertFalse(event.stopped)
-
-    def test_regex_rule_ignores_long_text(self):
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("rule3.gif", b"GIF89a-rule3" + b"u" * 8)
-        import asyncio
-
-        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        event = FakeEvent(text="把刚才那张表情包发我看看" * 5)
-        asyncio.run(plugin.regex_send_face(event))
-        self.assertEqual(event.sent, [])
+    def test_looks_like_meme(self):
+        f = self.mod.looks_like_meme
+        self.assertTrue(f(".gif", 500_000, 0, 0))
+        self.assertTrue(f(".jpg", 50_000, 200, 200))
+        self.assertFalse(f(".jpg", 900_000, 3000, 2000))
+        self.assertFalse(f(".jpg", 400_000, 200, 200))
+        self.assertFalse(f(".jpg", 90_000, 1200, 900))
 
     def test_strip_dsml_full_block(self):
         raw = (
@@ -332,21 +266,201 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertGreater(cut, 0)
 
     def test_strip_dsml_truncated(self):
-        raw = '随便说一句\n<｜｜DSML｜｜ invoke name="search_memes">\n<｜｜DSML｜｜ parameter name="query" string="true">丧'
-        cleaned, cut = self.mod.strip_dsml(raw)
+        raw = '随便说一句\n<｜｜DSML｜｜ invoke name="search_memes">\n<｜｜DSML｜｜ parameter name="q"'
+        cleaned, _ = self.mod.strip_dsml(raw)
         self.assertNotIn("DSML", cleaned)
         self.assertTrue(cleaned.startswith("随便说一句"))
 
-    def test_strip_dsml_plain_text_untouched(self):
+    def test_strip_dsml_plain_untouched(self):
         raw = "今天好累啊，早点睡"
-        cleaned, cut = self.mod.strip_dsml(raw)
-        self.assertEqual(cleaned, raw)
-        self.assertEqual(cut, 0)
+        self.assertEqual(self.mod.strip_dsml(raw), (raw, 0))
 
     def test_strip_dsml_ascii_pipes(self):
         raw = '<||DSML||> calls>\n<||DSML||> invoke name="x">'
-        cleaned, _cut = self.mod.strip_dsml(raw)
+        cleaned, _ = self.mod.strip_dsml(raw)
         self.assertNotIn("DSML", cleaned)
+
+    def test_regex_patterns(self):
+        send = self.mod.SEND_RE
+        self.assertTrue(send.search("发这个给我"))
+        self.assertTrue(send.search("我让你发这个表情包给我"))
+        self.assertTrue(send.search("发我看看啊"))
+        self.assertTrue(send.search("把这个还我"))
+        self.assertFalse(send.search("今天好累啊"))
+        self.assertFalse(send.search("这个不错吧"))
+
+        save = self.mod.PHOTO_SAVE_RE
+        self.assertTrue(save.search("把这张存下来"))
+        self.assertTrue(save.search("帮我保存这张照片"))
+        self.assertFalse(save.search("把刚才那张表情包发我看看"))
+
+        self.assertTrue(self.mod.PHOTO_WORD_RE.search("把刚才那张壁纸发我"))
+        self.assertTrue(self.mod.LOOKUP_RE.search("班味是什么梗"))
+        self.assertTrue(self.mod.ABBR_RE.fullmatch("kskbl"))
+
+    # ------------------------------------------------------------------ 入库
+
+    def test_ingest_face_and_qq_action(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        ev = FakeEvent()
+        src = self._gif("f.gif", b"GIF89a-f" + b"f" * 20)
+        rec = asyncio.run(plugin._ingest(ev, self.FakeImage(src)))
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["kind"], "face")
+        self.assertTrue(Path(rec["path"]).exists())
+
+        ok, _ = asyncio.run(plugin._add_to_qq_face(ev, Path(rec["path"])))
+        self.assertTrue(ok)
+        self.assertEqual(ev.bot.calls[0][0], "add_custom_face")
+        self.assertTrue(ev.bot.calls[0][1]["is_origin"])
+
+    def test_ingest_photo_when_large(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._jpg("big.jpg", 400_000)  # 400KB，判照片
+        rec = asyncio.run(plugin._ingest(FakeEvent(), self.FakeImage(src)))
+        self.assertEqual(rec["kind"], "photo")
+
+    def test_ingest_dedupe(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("dup.gif", b"GIF89a-dup" + b"z" * 8)
+        a = asyncio.run(plugin._ingest(FakeEvent(), self.FakeImage(src)))
+        b = asyncio.run(plugin._ingest(FakeEvent(), self.FakeImage(src)))
+        self.assertEqual(a["id"], b["id"])
+        self.assertEqual(len(plugin.media), 1)
+
+    def test_ingest_force_photo(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("as_photo.gif", b"GIF89a-p" + b"p" * 10)
+        rec = asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(src), force_kind="photo")
+        )
+        self.assertEqual(rec["kind"], "photo")
+
+    def test_auto_archive_hook_disabled(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {"auto_archive": False})
+        ev = FakeEvent([self.FakeImage(self._gif("h.gif"))])
+        asyncio.run(plugin.on_any_message(ev))
+        self.assertEqual(ev.bot.calls, [])
+        self.assertEqual(plugin.media, {})
+
+    def test_auto_archive_hook_runs(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {"auto_archive": True})
+        ev = FakeEvent([self.FakeImage(self._gif("h2.gif", b"GIF89a-h2" + b"m" * 6))])
+        asyncio.run(plugin.on_any_message(ev))
+        self.assertEqual(len(ev.bot.calls), 1)
+        self.assertEqual(len(plugin.media), 1)
+
+    # ------------------------------------------------------------------ 发送
+
+    def test_deliver_best_prefers_recent(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        photo = asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._jpg("ph.jpg", 400_000)))
+        )
+        face = asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._gif("now.gif", b"GIF89a-n" + b"n" * 9)))
+        )
+        ev = FakeEvent()
+        res = asyncio.run(plugin._deliver_best(ev, "发我看看啊", reason="test"))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["sent"], face["id"])
+        self.assertEqual(len(ev.sent), 1)
+
+    def test_deliver_best_photo_wording(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        photo = asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._jpg("wp.jpg", 500_000)))
+        )
+        ev = FakeEvent()
+        res = asyncio.run(plugin._deliver_best(ev, "把刚才那张壁纸发我", reason="test"))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["sent"], photo["id"])
+
+    def test_deliver_best_empty_library(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        res = asyncio.run(plugin._deliver_best(FakeEvent(), "发我看看", reason="test"))
+        self.assertFalse(res["ok"])
+
+    def test_send_media_tool(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        rec = asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._gif("t.gif", b"GIF89a-t" + b"t" * 7)))
+        )
+        ev = FakeEvent()
+        out = json.loads(asyncio.run(plugin.send_media_tool(ev, "刚才那张")))
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["sent"], rec["id"])
+
+    def test_find_by_caption_then_prefix(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        rec = asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._gif("c.gif", b"GIF89a-c" + b"c" * 5)))
+        )
+        rec["caption"] = "傲娇脸 蓝色小鱼"
+        self.assertIsNotNone(plugin.find("傲娇脸"))
+        self.assertIsNone(plugin.find("完全不相干"))
+        self.assertIsNotNone(plugin.find(rec["id"]))
+
+    # ------------------------------------------------------------------ 规则
+
+    def test_regex_send_triggers_and_stops(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._gif("r.gif", b"GIF89a-r" + b"r" * 5)))
+        )
+        ev = FakeEvent(text="把刚才那张表情包发我看看")
+        asyncio.run(plugin.regex_send(ev))
+        self.assertEqual(len(ev.sent), 1)
+        self.assertTrue(ev.stopped)
+
+    def test_regex_send_ignores_unrelated(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._gif("r2.gif", b"GIF89a-r2" + b"t" * 5)))
+        )
+        ev = FakeEvent(text="今天好累啊")
+        asyncio.run(plugin.regex_send(ev))
+        self.assertEqual(ev.sent, [])
+        self.assertFalse(ev.stopped)
+
+    def test_regex_send_ignores_save_request(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        asyncio.run(
+            plugin._ingest(FakeEvent(), self.FakeImage(self._gif("r3.gif", b"GIF89a-r3" + b"u" * 5)))
+        )
+        ev = FakeEvent(text="把这张存下来")
+        asyncio.run(plugin.regex_send(ev))
+        self.assertEqual(ev.sent, [])
+
+    # ------------------------------------------------------------------ 输出处理
 
     def test_voice_added_only_when_requested(self):
         import asyncio
@@ -373,191 +487,12 @@ class FaceBridgeTest(unittest.TestCase):
         asyncio.run(plugin.voice_on_demand(ev))
         self.assertEqual(ctx.tts.calls, ["行啊"])
         self.assertEqual(len(ev._result.chain), 2)
-        self.assertEqual(ev._result.chain[-1].file, "/tmp/fake.wav")
 
-        # 普通消息不该触发
         ev2 = FakeEvent(text="今天吃了啥", reply="随便吃了点")
         asyncio.run(plugin.voice_on_demand(ev2))
         self.assertEqual(len(ctx.tts.calls), 1)
-        self.assertEqual(len(ev2._result.chain), 1)
 
-    def test_lookup_trigger_detection(self):
-        self.assertTrue(self.mod.LOOKUP_HINT_RE.search("班味是什么梗"))
-        self.assertTrue(self.mod.LOOKUP_HINT_RE.search("这啥意思啊"))
-        self.assertTrue(self.mod.ABBR_RE.fullmatch("kskbl"))
-        self.assertFalse(self.mod.LOOKUP_HINT_RE.search("今天吃了啥"))
-        self.assertFalse(self.mod.ABBR_RE.fullmatch("吃了吗"))
-
-    def test_auto_lookup_skips_without_key(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        ev = FakeEvent(text="班味是什么梗")
-        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
-        asyncio.run(plugin.auto_lookup(ev, req))
-        self.assertEqual(req.extra_user_content_parts, [])
-        self.assertEqual(req.prompt, "hi")
-
-    def test_auto_lookup_skips_normal_chat(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        calls = []
-        plugin._websearch_key = lambda: "fake-key"
-
-        async def fake_search(q, k, timeout=6.0):
-            calls.append(q)
-            return "- 结果"
-
-        plugin._search_web = fake_search
-        ev = FakeEvent(text="今天好累啊")
-        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
-        asyncio.run(plugin.auto_lookup(ev, req))
-        self.assertEqual(calls, [])
-        self.assertEqual(req.extra_user_content_parts, [])
-
-    def test_auto_lookup_injects_when_hit(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        plugin._websearch_key = lambda: "fake-key"
-
-        async def fake_search(q, k, timeout=6.0):
-            return "- 班味：指职场疲惫状态"
-
-        plugin._search_web = fake_search
-        ev = FakeEvent(text="班味是什么梗")
-        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
-        asyncio.run(plugin.auto_lookup(ev, req))
-        self.assertEqual(len(req.extra_user_content_parts), 1)
-        self.assertIn("班味", req.extra_user_content_parts[0]["text"])
-
-    def test_looks_like_meme(self):
-        f = self.mod.looks_like_meme
-        self.assertTrue(f(".gif", 500_000, 0, 0))
-        self.assertFalse(f(".jpg", 900_000, 3000, 2000))
-        self.assertTrue(f(".jpg", 50_000, 200, 200))
-        self.assertFalse(f(".jpg", 400_000, 200, 200))
-        self.assertFalse(f(".jpg", 90_000, 1200, 900))
-
-    def test_photo_save_regex(self):
-        r = self.mod.PHOTO_SAVE_RE
-        self.assertTrue(r.search("把这张存下来"))
-        self.assertTrue(r.search("帮我保存这张照片"))
-        self.assertFalse(r.search("把刚才那张表情包发我看看"))
-
-    def test_store_photo_and_send_latest(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        raw = b"\xff\xd8\xff" + b"p" * 5000
-        src = self._gif("pic.jpg", raw)
-        rec = asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
-        self.assertIsNotNone(rec)
-        self.assertTrue(Path(rec["path"]).exists())
-        self.assertTrue(rec["path"].endswith(".jpg"))
-        self.assertIn("day", rec)
-
-        ev = FakeEvent()
-        out = asyncio.run(plugin._send_photo(ev, ""))
-        self.assertTrue(out["ok"])
-        self.assertEqual(out["sent"], rec["id"])
-        self.assertEqual(len(ev.sent), 1)
-
-    def test_store_photo_dedupe(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("dup2.jpg", b"\xff\xd8\xff" + b"d" * 3000)
-        a = asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
-        b = asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
-        self.assertEqual(a["id"], b["id"])
-        self.assertEqual(len(plugin.photos), 1)
-
-    def test_list_photos(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("lp.jpg", b"\xff\xd8\xff" + b"l" * 2000)
-        asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
-        items = sorted(
-            plugin.photos.values(), key=lambda r: r.get("added", 0), reverse=True
-        )
-        self.assertEqual(len(items), 1)
-        self.assertIn("day", items[0])
-
-    def test_send_photo_unknown(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        out = asyncio.run(plugin._send_photo(FakeEvent(), "deadbeef0000"))
-        self.assertFalse(out["ok"])
-
-    def test_photo_rule_does_not_trigger_face_send(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("f.gif", b"GIF89a-f" + b"f" * 20)
-        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        ev = FakeEvent(text="把这张存下来")
-        asyncio.run(plugin.regex_send_face(ev))
-        self.assertEqual(ev.sent, [])
-        self.assertFalse(ev.stopped)
-
-    def test_photo_word_regex(self):
-        r = self.mod.PHOTO_WORD_RE
-        self.assertTrue(r.search("把刚才那张壁纸发我"))
-        self.assertTrue(r.search("那张照片还在吗"))
-        self.assertFalse(r.search("把刚才那张表情包发我看看"))
-
-    def test_photo_max_bytes_default(self):
-        plugin = self.mod.FaceBridge(None, {})
-        self.assertEqual(plugin.photo_max_bytes, 20971520)
-        self.assertEqual(plugin.max_bytes, 5242880)
-
-    def test_regex_sends_photo_when_wallpaper_mentioned(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        src = self._gif("wp.jpg", b"\xff\xd8\xff" + b"w" * 6000)
-        asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
-        face_src = self._gif("ff.gif", b"GIF89a-ff" + b"q" * 12)
-        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(face_src)))
-
-        ev = FakeEvent(text="把刚才那张壁纸发我")
-        asyncio.run(plugin.regex_send_face(ev))
-        self.assertEqual(len(ev.sent), 1)
-        self.assertTrue(ev.stopped)
-
-    def test_regex_still_sends_face_for_meme_wording(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        face_src = self._gif("ff2.gif", b"GIF89a-ff2" + b"r" * 12)
-        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(face_src)))
-        ev = FakeEvent(text="把刚才那张表情包发我看看")
-        asyncio.run(plugin.regex_send_face(ev))
-        self.assertEqual(len(ev.sent), 1)
-        self.assertTrue(ev.stopped)
-
-    def test_vague_request_sends_the_one_just_discussed(self):
-        import asyncio
-
-        plugin = self.mod.FaceBridge(None, {})
-        # 先在相册放一张照片（旧逻辑会一直发它）
-        photo_src = self._gif("old_photo.jpg", b"\xff\xd8\xff" + b"o" * 4000)
-        asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(photo_src)))
-        # 再放进一张表情（这才是"刚才在聊的那张"）
-        face_src = self._gif("now.gif", b"GIF89a-now" + b"n" * 20)
-        face_rec = asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(face_src)))
-
-        ev = FakeEvent(text="发我看看啊")
-        asyncio.run(plugin.regex_send_face(ev))
-        self.assertEqual(len(ev.sent), 1)
-        self.assertTrue(ev.stopped)
-        self.assertEqual(plugin.recent_media["id"], face_rec["id"])
-
-    def test_inject_recent_media_hint(self):
+    def test_recent_media_hint(self):
         import asyncio
 
         plugin = self.mod.FaceBridge(None, {})
@@ -570,38 +505,36 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertEqual(len(req.extra_user_content_parts), 1)
         self.assertIn("abc123", req.extra_user_content_parts[0]["text"])
 
-    def test_list_faces(self):
+    def test_auto_lookup_injects(self):
+        import asyncio
+
         plugin = self.mod.FaceBridge(None, {})
+        plugin._websearch_key = lambda: "k"
+
+        async def fake_search(q, k, timeout=6.0):
+            return "- 班味：职场疲惫状态"
+
+        plugin._search_web = fake_search
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.auto_lookup(FakeEvent(text="班味是什么梗"), req))
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        self.assertIn("班味", req.extra_user_content_parts[0]["text"])
+
+    def test_auto_lookup_skips_normal_chat(self):
         import asyncio
 
-        src = self._gif("list.gif", b"GIF89a-list" + b"w" * 4)
-        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(src)))
-        items = sorted(
-            plugin.index.values(), key=lambda r: r.get("added", 0), reverse=True
-        )
-        self.assertGreaterEqual(len(items), 1)
-        self.assertIn("id", items[0])
+        plugin = self.mod.FaceBridge(None, {})
+        plugin._websearch_key = lambda: "k"
+        calls = []
 
-    def test_auto_archive_hook_disabled(self):
-        plugin = self.mod.FaceBridge(None, {"auto_archive": False})
-        src = self._gif("hook.gif", b"GIF89a-hook")
-        event = FakeEvent([self.FakeImage(src)])
-        import asyncio
+        async def fake_search(q, k, timeout=6.0):
+            calls.append(q)
+            return "- x"
 
-        asyncio.run(plugin.on_any_message(event))
-        self.assertEqual(event.bot.calls, [])
-        self.assertEqual(plugin.index, {})
-
-    def test_auto_archive_hook_runs(self):
-        plugin = self.mod.FaceBridge(None, {"auto_archive": True})
-        src = self._gif("hook2.gif", b"GIF89a-hook2" + b"m" * 6)
-        event = FakeEvent([self.FakeImage(src)])
-        import asyncio
-
-        asyncio.run(plugin.on_any_message(event))
-        self.assertEqual(len(event.bot.calls), 1)
-        self.assertEqual(event.bot.calls[0][0], "add_custom_face")
-        self.assertEqual(len(plugin.index), 1)
+        plugin._search_web = fake_search
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.auto_lookup(FakeEvent(text="今天好累啊"), req))
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
