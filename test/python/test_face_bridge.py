@@ -469,7 +469,7 @@ class FaceBridgeTest(unittest.TestCase):
         self.assertIn("day", rec)
 
         ev = FakeEvent()
-        out = json.loads(asyncio.run(plugin.send_photo_tool(ev, "")))
+        out = asyncio.run(plugin._send_photo(ev, ""))
         self.assertTrue(out["ok"])
         self.assertEqual(out["sent"], rec["id"])
         self.assertEqual(len(ev.sent), 1)
@@ -490,15 +490,17 @@ class FaceBridgeTest(unittest.TestCase):
         plugin = self.mod.FaceBridge(None, {})
         src = self._gif("lp.jpg", b"\xff\xd8\xff" + b"l" * 2000)
         asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
-        out = json.loads(asyncio.run(plugin.list_photos_tool(FakeEvent(), 5)))
-        self.assertEqual(out["total"], 1)
-        self.assertEqual(len(out["items"]), 1)
+        items = sorted(
+            plugin.photos.values(), key=lambda r: r.get("added", 0), reverse=True
+        )
+        self.assertEqual(len(items), 1)
+        self.assertIn("day", items[0])
 
     def test_send_photo_unknown(self):
         import asyncio
 
         plugin = self.mod.FaceBridge(None, {})
-        out = json.loads(asyncio.run(plugin.send_photo_tool(FakeEvent(), "deadbeef0000")))
+        out = asyncio.run(plugin._send_photo(FakeEvent(), "deadbeef0000"))
         self.assertFalse(out["ok"])
 
     def test_photo_rule_does_not_trigger_face_send(self):
@@ -511,6 +513,42 @@ class FaceBridgeTest(unittest.TestCase):
         asyncio.run(plugin.regex_send_face(ev))
         self.assertEqual(ev.sent, [])
         self.assertFalse(ev.stopped)
+
+    def test_photo_word_regex(self):
+        r = self.mod.PHOTO_WORD_RE
+        self.assertTrue(r.search("把刚才那张壁纸发我"))
+        self.assertTrue(r.search("那张照片还在吗"))
+        self.assertFalse(r.search("把刚才那张表情包发我看看"))
+
+    def test_photo_max_bytes_default(self):
+        plugin = self.mod.FaceBridge(None, {})
+        self.assertEqual(plugin.photo_max_bytes, 20971520)
+        self.assertEqual(plugin.max_bytes, 5242880)
+
+    def test_regex_sends_photo_when_wallpaper_mentioned(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        src = self._gif("wp.jpg", b"\xff\xd8\xff" + b"w" * 6000)
+        asyncio.run(plugin._store_photo(FakeEvent(), self.FakeImage(src)))
+        face_src = self._gif("ff.gif", b"GIF89a-ff" + b"q" * 12)
+        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(face_src)))
+
+        ev = FakeEvent(text="把刚才那张壁纸发我")
+        asyncio.run(plugin.regex_send_face(ev))
+        self.assertEqual(len(ev.sent), 1)
+        self.assertTrue(ev.stopped)
+
+    def test_regex_still_sends_face_for_meme_wording(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        face_src = self._gif("ff2.gif", b"GIF89a-ff2" + b"r" * 12)
+        asyncio.run(plugin._store_image(FakeEvent(), self.FakeImage(face_src)))
+        ev = FakeEvent(text="把刚才那张表情包发我看看")
+        asyncio.run(plugin.regex_send_face(ev))
+        self.assertEqual(len(ev.sent), 1)
+        self.assertTrue(ev.stopped)
 
     def test_list_faces(self):
         plugin = self.mod.FaceBridge(None, {})

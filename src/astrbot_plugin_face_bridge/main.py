@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import shutil
 import time
@@ -38,6 +39,14 @@ DSML_RE = re.compile(
     r"<[|｜]{2}\s*DSML\s*[|｜]{2}[\s\S]*?(?:</[|｜]{2}\s*DSML\s*[|｜]{2}\s*calls>|\Z)"
 )
 DSML_LOOSE_RE = re.compile(r"<[|｜]{2}\s*DSML\s*[|｜]{2}[^\n]*")
+
+# 整条回复都被 DSML 污染时替换用的兜底话，别连着几次都用同一句
+DSML_FALLBACKS = (
+    "嗯……刚走神了，你再说一遍",
+    "诶，我这边没接住，再说一次",
+    "等下，刚才脑子短路了，重说",
+    "我好像跑偏了，你再说一遍",
+)
 
 # 用户明确要语音才合成：TTS 的 trigger_probability 已设为 0，主动发语音一律不发。
 VOICE_REQUEST_WORDS = (
@@ -380,7 +389,7 @@ class FaceBridge(Star):
         alive = [c for c in chain if getattr(c, "text", None) or not hasattr(c, "text")]
         if not alive:
             chain.clear()
-            chain.append(Plain("……我这边刚卡了一下，你再说一遍？"))
+            chain.append(Plain(random.choice(DSML_FALLBACKS)))
             logger.warning("[face_bridge] 整条回复都是 DSML，已替换为兜底文本")
         else:
             logger.warning("[face_bridge] 已剥掉 DSML 泄漏文本 %d 字符", removed)
@@ -732,81 +741,3 @@ class FaceBridge(Star):
             },
             ensure_ascii=False,
         )
-
-    # -------------------------------------------------------------- photo tools
-
-    @llm_tool(name="save_photo")
-    async def save_photo_tool(self, event: AstrMessageEvent, note: str = "") -> str:
-        """把本条消息里的图片存进相册（照片存档，不进表情收藏）。
-
-        用户说「这张存下来」「帮我留着」「记住这张照片」时调用。
-
-        Args:
-            note(string): 可留空的备注，比如"主人今天拍的"
-
-        Returns:
-            JSON，含是否成功、照片编号和日期。
-        """
-        images = [c for c in event.get_messages() if isinstance(c, Image)]
-        if not images:
-            return json.dumps(
-                {"ok": False, "reason": "这条消息里没有图片"}, ensure_ascii=False
-            )
-        out = []
-        for img in images:
-            rec = await self._store_photo(event, img, note=str(note or ""))
-            if rec:
-                out.append(
-                    {"id": rec["id"], "day": rec.get("day", ""), "size": rec.get("size", 0)}
-                )
-        return json.dumps({"ok": bool(out), "photos": out}, ensure_ascii=False)
-
-    @llm_tool(name="list_photos")
-    async def list_photos_tool(self, event: AstrMessageEvent, limit: int = 10) -> str:
-        """列出相册里最近的照片。
-
-        用户问「你都存了我哪些照片」「上次那张还在吗」时调用。
-
-        Args:
-            limit(number): 返回条数，最多 30
-
-        Returns:
-            JSON，含总数与每张的编号、日期、尺寸。
-        """
-        try:
-            n = max(1, min(int(limit), 30))
-        except Exception:
-            n = 10
-        items = sorted(
-            self.photos.values(), key=lambda r: r.get("added", 0), reverse=True
-        )[:n]
-        return json.dumps(
-            {
-                "total": len(self.photos),
-                "items": [
-                    {
-                        "id": r["id"],
-                        "day": r.get("day", ""),
-                        "size": f"{r.get('w', 0)}x{r.get('h', 0)}",
-                        "note": r.get("note", ""),
-                    }
-                    for r in items
-                ],
-            },
-            ensure_ascii=False,
-        )
-
-    @llm_tool(name="send_photo")
-    async def send_photo_tool(self, event: AstrMessageEvent, photo_id: str = "") -> str:
-        """把相册里的照片发出去。
-
-        编号留空就发最新存的那张，所以「把刚才那张照片发我」直接调用即可。
-
-        Args:
-            photo_id(string): 照片编号，可留空；留空表示发最新那张
-
-        Returns:
-            JSON，含是否成功与发出的编号。
-        """
-        result = await self._send_photo(event, photo_id)
-        return json.dumps(result, ensure_ascii=False)
