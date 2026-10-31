@@ -64,6 +64,8 @@ PHOTO_SAVE_RE = re.compile(
     r"(?:(?:存|保存|留着|收着|收藏).{0,8}(?:这张|这图|照片|我发))"
     r"|(?:(?:这张|这图|这张图|这张照片|照片).{0,6}(?:存下来|保存|留着|收着))"
 )
+# 用户说到这些词，就是指照片/壁纸，而不是表情包
+PHOTO_WORD_RE = re.compile(r"(照片|壁纸|截图|相片|大图|原图)")
 
 
 def strip_dsml(text: str) -> tuple[str, int]:
@@ -134,6 +136,10 @@ class FaceBridge(Star):
         self.photos: dict[str, dict] = self._load_photos()
 
         self.max_bytes = int(self.config.get("max_send_bytes", 5242880) or 5242880)
+        # 照片/壁纸往往是几 MB 的大图，单独给一个更宽松的上限
+        self.photo_max_bytes = int(
+            self.config.get("photo_max_bytes", 20971520) or 20971520
+        )
         logger.info(
             "[face_bridge] loaded: %d faces / %d photos cached, dir=%s",
             len(self.index),
@@ -193,7 +199,7 @@ class FaceBridge(Star):
         if not src.exists():
             return None
         size = src.stat().st_size
-        if size > self.max_bytes:
+        if size > self.photo_max_bytes:
             logger.warning("[face_bridge] 照片过大跳过: %d bytes", size)
             return None
         ext = src.suffix.lower()
@@ -594,12 +600,17 @@ class FaceBridge(Star):
         )
         event.stop_event()
 
-    @filter.regex(r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张)")
+    @filter.regex(r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张|壁纸)")
     async def regex_send_face(self, event: AstrMessageEvent):
         text = event.get_message_str() or ""
         if len(text) > 40:
             return
         if PHOTO_SAVE_RE.search(text):  # "把这张存下来"不该触发发图
+            return
+        if PHOTO_WORD_RE.search(text):  # 说的是照片/壁纸，就走相册
+            res = await self._send_photo(event, "")
+            if res.get("ok"):
+                event.stop_event()
             return
         if not any(k in text for k in ("图", "表情", "那张", "这张")):
             return
