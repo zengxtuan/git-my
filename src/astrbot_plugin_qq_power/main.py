@@ -23,7 +23,7 @@ import json
 import time
 from pathlib import Path
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig, llm_tool, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, StarTools
@@ -47,7 +47,205 @@ class QQPower(Star):
         self.requests: dict[str, dict] = self._load_requests()
         logger.info("[qq_power] loaded, %d 条申请缓存", len(self.requests))
 
-    # ------------------------------------------------------------------ 工具
+    # ------------------------------------------------------------------ LLM 工具
+
+    async def _do_allow(self, event: AstrMessageEvent, qq: str) -> str:
+        entry = f"qq:FriendMessage:{qq}"
+        try:
+            cfg = self.context.get_config()
+        except Exception as e:
+            return f"读配置失败：{e}"
+        ps = cfg.get("platform_settings") or {}
+        wl = list(ps.get("id_whitelist") or [])
+        if entry in wl:
+            return f"{qq} 本来就能跟机器人说话（白名单共 {len(wl)} 人）"
+        wl.append(entry)
+        ps["id_whitelist"] = wl
+        cfg["platform_settings"] = ps
+        try:
+            await cfg.save_config_async()
+        except Exception as e:
+            return f"写配置失败：{e}"
+        return (
+            f"放行了 {qq}，现在共 {len(wl)} 人能跟机器人说话。"
+            "他跟机器人的记忆是分开存的，看不到你这边的聊天。"
+        )
+
+    async def _do_revoke(self, event: AstrMessageEvent, qq: str) -> str:
+        entry = f"qq:FriendMessage:{qq}"
+        try:
+            cfg = self.context.get_config()
+        except Exception as e:
+            return f"读配置失败：{e}"
+        ps = cfg.get("platform_settings") or {}
+        wl = list(ps.get("id_whitelist") or [])
+        if entry not in wl:
+            return f"{qq} 本来就不在白名单里"
+        wl.remove(entry)
+        ps["id_whitelist"] = wl
+        cfg["platform_settings"] = ps
+        try:
+            await cfg.save_config_async()
+        except Exception as e:
+            return f"写配置失败：{e}"
+        return f"收回了 {qq}，还剩 {len(wl)} 人"
+
+    async def _do_list_whitelist(self, event: AstrMessageEvent) -> str:
+        try:
+            cfg = self.context.get_config()
+        except Exception as e:
+            return f"读配置失败：{e}"
+        ps = cfg.get("platform_settings") or {}
+        wl = list(ps.get("id_whitelist") or [])
+        head = "白名单开着" if ps.get("enable_id_white_list") else "白名单关着（谁都能聊）"
+        return head + (f"，共 {len(wl)} 人：\n" + "\n".join(wl) if wl else "，名单是空的")
+
+    @llm_tool(name="qq_do")
+    async def qq_do_tool(
+        self,
+        event: AstrMessageEvent,
+        action: str,
+        target: str = "",
+        extra: str = "",
+    ) -> str:
+        """替主人操作 QQ，主人用大白话说要干什么时调用它。
+
+        能做的事（action 取值）：
+            放行 —— 让某人能跟机器人说话（target=他的QQ号）
+            收回 —— 不让某人了（target=QQ号）
+            白名单 —— 看谁在名单里
+            好友 —— 列好友
+            申请 —— 看待处理的好友申请
+            同意 / 拒绝 —— 处理申请（target=申请里的 flag）
+            删好友 —— 删掉某人（target=QQ号）
+            备注 —— 改备注（target=QQ号，extra=备注名）
+            点赞 —— 名片点赞（target=QQ号，extra=次数）
+            拍 —— 拍一拍（target=QQ号）
+            资料 —— 查资料（target=QQ号）
+            改昵称 —— 改机器人自己的昵称（extra=新昵称）
+
+        用户说「加他进来」「让他能跟我说话」就用 放行；
+        说「别让他烦我」「踢了」就用 收回；说「删了他」才用 删好友。
+
+        Args:
+            action(string): 要做的事，取上面列出的值之一
+            target(string): 目标 QQ 号或 flag，没有就留空
+            extra(string): 附加内容，比如备注名、点赞次数、新昵称
+
+        Returns:
+            做完了的结果，直接用自己的话转述给主人。
+        """
+        act = (action or "").strip()
+        tg = (target or "").strip()
+        ex = (extra or "").strip()
+
+        try:
+            if act == "放行":
+                if not tg.isdigit():
+                    return "需要对方的 QQ 号才能放行"
+                return await self._do_allow(event, tg)
+            if act == "收回":
+                if not tg.isdigit():
+                    return "需要 QQ 号"
+                return await self._do_revoke(event, tg)
+            if act == "白名单":
+                return await self._do_list_whitelist(event)
+
+            if act == "好友":
+                data, err = await self._call(event, "get_friend_list")
+                if err:
+                    return err
+                items = data if isinstance(data, list) else (data or {}).get("data") or []
+                return f"共 {len(items)} 个好友：" + "、".join(
+                    f"{f.get('user_id') or f.get('uin')}({f.get('remark') or f.get('nickname') or ''})"
+                    for f in items[:30]
+                )
+            if act == "申请":
+                data, err = await self._call(event, "get_doubt_friends_add_request")
+                if err:
+                    return err
+                items = data if isinstance(data, list) else (data or {}).get("data") or []
+                if not items:
+                    return "现在没有待处理的好友申请"
+                lines = []
+                for r in items[:10]:
+                    flag = str(r.get("flag") or r.get("request_id") or "")
+                    qq = r.get("user_id") or r.get("uin") or "?"
+                    msg = str(r.get("message") or r.get("msg") or "")[:20]
+                    if flag:
+                        self.requests[flag] = {"flag": flag, "user_id": qq, "message": msg}
+                    lines.append(f"{qq} 说「{msg}」flag={flag[:12]}")
+                self._save_requests()
+                return "待处理：\n" + "\n".join(lines) + "\n（要同意就把 flag 告诉我）"
+            if act in ("同意", "拒绝"):
+                flag = tg or (list(self.requests) or [""])[0]
+                if not flag:
+                    return "没有已知的申请 flag，先让我看一眼申请列表"
+                data, err = await self._call(
+                    event,
+                    "set_friend_add_request",
+                    flag=flag,
+                    approve=(act == "同意"),
+                    **({"remark": ex} if ex else {}),
+                )
+                if err:
+                    return err
+                self.requests.pop(flag, None)
+                self._save_requests()
+                return f"{act}了（{flag[:12]}）"
+            if act == "删好友":
+                if not tg.isdigit():
+                    return "需要 QQ 号"
+                data, err = await self._call(event, "delete_friend", user_id=int(tg))
+                return err or f"删了 {tg}"
+            if act == "备注":
+                if not tg.isdigit() or not ex:
+                    return "需要 QQ 号和备注名"
+                data, err = await self._call(
+                    event, "set_friend_remark", user_id=int(tg), remark=ex
+                )
+                return err or f"{tg} 的备注改成「{ex}」了"
+            if act == "点赞":
+                if not tg.isdigit():
+                    return "需要 QQ 号"
+                times = int(ex) if ex.isdigit() else 10
+                data, err = await self._call(
+                    event, "send_like", user_id=int(tg), times=times
+                )
+                return err or f"给 {tg} 点了 {times} 个赞"
+            if act == "拍":
+                if not tg.isdigit():
+                    return "需要 QQ 号"
+                data, err = await self._call(event, "friend_poke", user_id=int(tg))
+                if err:
+                    data, err = await self._call(event, "send_poke", user_id=int(tg))
+                return err or f"拍了 {tg} 一下"
+            if act == "资料":
+                if not tg.isdigit():
+                    return "需要 QQ 号"
+                data, err = await self._call(
+                    event, "get_stranger_info", user_id=int(tg), no_cache=True
+                )
+                if err:
+                    return err
+                d = data if isinstance(data, dict) else {}
+                d = d.get("data", d)
+                return (
+                    f"{tg}：昵称 {d.get('nick') or d.get('nickname') or '?'}，"
+                    f"{d.get('sex') or '?'}，{d.get('age') or '?'} 岁，"
+                    f"签名：{d.get('longNick') or d.get('sign') or '（空）'}"
+                )
+            if act == "改昵称":
+                if not ex:
+                    return "要改成什么昵称？"
+                data, err = await self._call(event, "set_qq_profile", nickname=ex)
+                return err or f"昵称改成「{ex}」了"
+        except Exception as e:
+            logger.error("[qq_power] qq_do(%s) 异常: %s", act, e)
+            return f"操作失败：{str(e)[:120]}"
+        return f"不认识「{act}」这个操作"
+
+    # ------------------------------------------------------------------ 命令（精确入口）
 
     def _load_requests(self) -> dict[str, dict]:
         if not self.req_path.exists():
