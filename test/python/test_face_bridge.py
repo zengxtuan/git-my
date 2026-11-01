@@ -71,6 +71,10 @@ def _install_stubs(data_dir: Path):
         def __init__(self, file=""):
             self.file = file
 
+    class Face:
+        def __init__(self, id=None, **_):
+            self.id = id
+
     class Star:
         def __init__(self, context, config=None):
             self.context = context
@@ -133,6 +137,7 @@ def _install_stubs(data_dir: Path):
     message.Image = Image
     message.Plain = Plain
     message.Record = Record
+    message.Face = Face
     star_mod.Context = Context
     star_mod.Star = Star
     star_mod.StarTools = StarTools
@@ -174,7 +179,6 @@ class FakeEvent:
         if reply:
             PlainCls = sys.modules["astrbot.api.message_components"].Plain
             self._result = types.SimpleNamespace(chain=[PlainCls(reply)])
-
     def get_messages(self):
         return self._images
 
@@ -504,6 +508,31 @@ class FaceBridgeTest(unittest.TestCase):
         asyncio.run(plugin.inject_recent_media_hint(FakeEvent(), req))
         self.assertEqual(len(req.extra_user_content_parts), 1)
         self.assertIn("abc123", req.extra_user_content_parts[0]["text"])
+
+    def test_annotate_qq_faces(self):
+        import asyncio
+
+        FaceCls = sys.modules["astrbot.api.message_components"].Face
+        plugin = self.mod.FaceBridge(None, {})
+        # 名称表在真实插件目录里，桩环境下可能为空，直接注入两条
+        plugin.face_table = {"178": "斜眼笑", "14": "微笑"}
+
+        ev = FakeEvent([FaceCls(id=178), FaceCls(id=14)])
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.annotate_qq_faces(ev, req))
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        text = req.extra_user_content_parts[0]["text"]
+        self.assertIn("斜眼笑", text)
+        self.assertIn("微笑", text)
+
+    def test_annotate_qq_faces_skips_without_face(self):
+        import asyncio
+
+        plugin = self.mod.FaceBridge(None, {})
+        ev = FakeEvent()
+        req = types.SimpleNamespace(prompt="hi", extra_user_content_parts=[])
+        asyncio.run(plugin.annotate_qq_faces(ev, req))
+        self.assertEqual(req.extra_user_content_parts, [])
 
     def test_auto_lookup_injects(self):
         import asyncio

@@ -22,12 +22,13 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, llm_tool, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import Image, Plain, Record
+from astrbot.api.message_components import Face, Image, Plain, Record
 from astrbot.api.star import Context, Star, StarTools
 
 PLUGIN_NAME = "astrbot_plugin_face_bridge"
 MEDIA_INDEX = "media.json"
 MEDIA_DIR = "media"
+FACE_TABLE_FILE = "qq_faces.json"
 EXT_WHITELIST = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 # 表情还是照片：GIF 一律表情；边长 ≤512 且 ≤300KB 也算表情；其余按照片存
@@ -184,6 +185,7 @@ class FaceBridge(Star):
         )
         self.recent_media: dict | None = None
         self._caption_vec: dict[str, list[float]] = {}
+        self.face_table = self._load_face_table()
 
         faces = sum(1 for r in self.media.values() if r.get("kind") == "face")
         logger.info("[face_bridge] loaded: %d faces / %d photos", faces, len(self.media) - faces)
@@ -613,6 +615,46 @@ class FaceBridge(Star):
                 logger.info("[face_bridge] 按需语音已附加: %s", audio)
         except Exception as e:
             logger.error("[face_bridge] 按需语音失败: %s", e)
+
+    @filter.on_llm_request(priority=4)
+    async def annotate_qq_faces(self, event: AstrMessageEvent, req):
+        """把 QQ 自带小表情翻译成人话，否则模型只看到一串编号。
+
+        AstrBot 解析消息时不会把 Face 段写进 message_str，模型完全不知道用户发了表情。
+        这里从 QQ 客户端自带的 default_config.json 里取的名称表（264 条）做翻译。
+        """
+        try:
+            faces = [c for c in event.get_messages() if isinstance(c, Face)]
+        except Exception:
+            return
+        if not faces:
+            return
+        names = []
+        for f in faces:
+            fid = getattr(f, "id", None)
+            if fid is None:
+                continue
+            names.append(self.face_table.get(str(fid)) or f"表情ID{fid}")
+        if not names:
+            return
+        self._append_context(
+            req,
+            f"【用户这条消息里带了 QQ 表情：{'、'.join(names)}。"
+            "按表情的情绪自然回应，别提什么编号】",
+        )
+        logger.info("[face_bridge] 表情已翻译: %s", "、".join(names))
+
+    def _load_face_table(self) -> dict[str, str]:
+        p = Path(__file__).parent / FACE_TABLE_FILE
+        if not p.exists():
+            logger.warning("[face_bridge] 找不到表情名称表 %s", p)
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning("[face_bridge] 表情名称表读取失败: %s", e)
+            return {}
 
     @filter.on_llm_request(priority=3)
     async def inject_recent_media_hint(self, event: AstrMessageEvent, req):
