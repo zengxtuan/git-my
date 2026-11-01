@@ -45,6 +45,8 @@ class QQPower(Star):
             self.root = Path("data/plugin_data") / PLUGIN_NAME
         self.root.mkdir(parents=True, exist_ok=True)
         self.req_path = self.root / CACHE_FILE
+        self.avatar_dir = self.root / "avatars"
+        self.avatar_dir.mkdir(parents=True, exist_ok=True)
         self.requests: dict[str, dict] = self._load_requests()
         logger.info("[qq_power] loaded, %d 条申请缓存", len(self.requests))
 
@@ -146,6 +148,43 @@ class QQPower(Star):
                 return p
         return None
 
+    async def _generate_avatar(self, prompt: str) -> Path | None:
+        """没有现成图时，自己画一张（Pollinations 免费文生图）。"""
+        import urllib.parse
+
+        prompt = (prompt or "a cute chubby blue whale cartoon avatar, flat illustration").strip()
+        url = (
+            "https://image.pollinations.ai/prompt/"
+            + urllib.parse.quote(prompt[:180])
+            + "?width=768&height=768&nologo=true&seed="
+            + str(int(time.time()) % 100000)
+        )
+        self.avatar_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            import aiohttp
+
+            tm = aiohttp.ClientTimeout(total=90)
+            async with aiohttp.ClientSession(timeout=tm) as sess:
+                async with sess.get(url) as resp:
+                    if resp.status != 200:
+                        logger.warning("[qq_power] 生图 HTTP %s", resp.status)
+                        return None
+                    data = await resp.read()
+        except Exception as e:
+            logger.warning("[qq_power] 生图失败: %s", e)
+            return None
+        if len(data) < 5000:
+            logger.warning("[qq_power] 生图返回太小: %d bytes", len(data))
+            return None
+        path = self.avatar_dir / f"gen_{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+        try:
+            path.write_bytes(data)
+        except Exception as e:
+            logger.warning("[qq_power] 存图失败: %s", e)
+            return None
+        logger.info("[qq_power] 自己画了一张头像: %s (%d bytes)", path.name, len(data))
+        return path
+
     async def _do_set_avatar(self, event: AstrMessageEvent, want: str) -> str:
         """换头像：优先用这条消息里带的图，其次从库里按描述挑。"""
         bot = getattr(event, "bot", None)
@@ -171,6 +210,9 @@ class QQPower(Star):
 
         if target is None:
             target = self._pick_media(want)
+        if target is None:
+            # 库里没有 → 自己画一张（用户说"你挑一个喜欢的"就走这里）
+            target = await self._generate_avatar(want)
         if target is None or not target.exists():
             return "没找到能当头像的图，你先发一张或者告诉我用哪张"
 
