@@ -20,6 +20,7 @@ NapCat 底层早就支持这些 action，只是 AstrBot 没把它们暴露出来
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -100,6 +101,86 @@ class QQPower(Star):
         head = "白名单开着" if ps.get("enable_id_white_list") else "白名单关着（谁都能聊）"
         return head + (f"，共 {len(wl)} 人：\n" + "\n".join(wl) if wl else "，名单是空的")
 
+    # ------------------------------------------------------------- 头像相关
+
+    MEDIA_JSON = Path("/opt/astrbot/data/plugin_data/astrbot_plugin_face_bridge/media.json")
+
+    def _media_pool(self) -> list[dict]:
+        try:
+            data = json.loads(self.MEDIA_JSON.read_text(encoding="utf-8"))
+            return [r for r in data.values() if isinstance(r, dict) and r.get("path")]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _grams(text: str, n: int = 2) -> set[str]:
+        s = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9]", "", text or "")
+        if len(s) < n:
+            return {s} if s else set()
+        return {s[i : i + n] for i in range(len(s) - n + 1)}
+
+    def _pick_media(self, want: str) -> Path | None:
+        """从表情/照片库里挑一张：按描述匹配，挑不到就给最新那张。"""
+        pool = self._media_pool()
+        if not pool:
+            return None
+        want = (want or "").strip()
+        if want:
+            wg = self._grams(want)
+            best, score = None, 0
+            for r in pool:
+                cap = str(r.get("caption") or "")
+                if not cap:
+                    continue
+                s = len(wg & self._grams(cap))
+                if s > score:
+                    best, score = r, s
+            if best and score >= 2:
+                p = Path(best["path"])
+                if p.exists():
+                    return p
+        pool.sort(key=lambda r: r.get("added", 0), reverse=True)
+        for r in pool:
+            p = Path(r["path"])
+            if p.exists():
+                return p
+        return None
+
+    async def _do_set_avatar(self, event: AstrMessageEvent, want: str) -> str:
+        """换头像：优先用这条消息里带的图，其次从库里按描述挑。"""
+        bot = getattr(event, "bot", None)
+        if not hasattr(bot, "call_action"):
+            return "当前平台换不了头像"
+
+        target: Path | None = None
+        try:
+            from astrbot.api.message_components import Image as _Img
+
+            for seg in event.get_messages():
+                if isinstance(seg, _Img):
+                    try:
+                        target = Path(await seg.convert_to_file_path())
+                    except Exception:
+                        url = getattr(seg, "url", None)
+                        if url:
+                            await bot.call_action("set_qq_avatar", file=url)
+                            return "头像换好了，用的你刚发的那张"
+                    break
+        except Exception as e:
+            logger.warning("[qq_power] 取消息里的图失败: %s", e)
+
+        if target is None:
+            target = self._pick_media(want)
+        if target is None or not target.exists():
+            return "没找到能当头像的图，你先发一张或者告诉我用哪张"
+
+        try:
+            await bot.call_action("set_qq_avatar", file=str(target))
+        except Exception as e:
+            return f"换头像失败了：{str(e)[:120]}"
+        logger.info("[qq_power] 头像已换成 %s", target.name)
+        return f"头像换成 {target.name} 了"
+
     @llm_tool(name="qq_do")
     async def qq_do_tool(
         self,
@@ -126,10 +207,11 @@ class QQPower(Star):
 
         用户说「加他进来」「让他能跟我说话」就用 放行；
         说「别让他烦我」「踢了」就用 收回；说「删了他」才用 删好友。
+        说「换个头像」「用这张当你头像」就用 换头像（不用 target，直接用消息里的图或库里最新那张）。
 
         Args:
             action(string): 要做的事，取上面列出的值之一
-            target(string): 目标 QQ 号或 flag，没有就留空
+            target(string): 目标 QQ 号 / flag / 图片描述（比如"傲娇那张"），没有就留空
             extra(string): 附加内容，比如备注名、点赞次数、新昵称
 
         Returns:
@@ -139,7 +221,16 @@ class QQPower(Star):
         tg = (target or "").strip()
         ex = (extra or "").strip()
 
+        # 安全兜底：就算 tool_permissions 配置丢了，也不让非管理员操作
         try:
+            if not event.is_admin():
+                return "这个只有主人能让我做"
+        except Exception:
+            pass
+
+        try:
+            if act == "换头像":
+                return await self._do_set_avatar(event, tg or ex)
             if act == "放行":
                 if not tg.isdigit():
                     return "需要对方的 QQ 号才能放行"
