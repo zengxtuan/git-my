@@ -25,6 +25,32 @@ description: Use when ...（AI 靠这句判断该不该加载）
 
 支持 Agent Skills 的工具（DSH、Claude Code、Cursor 等）可以直接使用。
 
+## 部署教程
+
+完整的分平台教程在 [`guides/`](guides/README.md)，从零到能用的每一步都带验证命令：
+
+| 文档 | 内容 |
+|---|---|
+| [guides/README.md](guides/README.md) | 选路线、组件全景、三条硬约束 |
+| [guides/local-windows.md](guides/local-windows.md) | **本地端**：Windows 上跑 AstrBot + NapCat，含自启守护 |
+| [guides/server-linux.md](guides/server-linux.md) | **服务器端**：Linux + systemd + 防火墙 + 备份回滚 |
+| [guides/plugins/face-bridge.md](guides/plugins/face-bridge.md) | 表情/照片桥：收图、按描述找图、发图 |
+| [guides/plugins/qq-power.md](guides/plugins/qq-power.md) | 操作 QQ：放行、好友、备注、点赞、换头像、画图 |
+| [guides/plugins/local-embedding.md](guides/plugins/local-embedding.md) | 本地 embedding，免费替代付费向量服务 |
+| [guides/troubleshooting/tools-not-sent.md](guides/troubleshooting/tools-not-sent.md) | ★ 模型说"我没有工具"的真正原因 |
+| [guides/troubleshooting/capture-requests.md](guides/troubleshooting/capture-requests.md) | 抓包看真实请求，别再猜 |
+| [guides/troubleshooting/dsml-leak.md](guides/troubleshooting/dsml-leak.md) | `<｜｜DSML｜｜>` 乱码的成因与兜底 |
+
+**最值得先读的一条**：provider 的 `modalities` 必须写成
+
+```json
+["text", "image", "tool_use"]
+```
+
+漏掉 `tool_use`，AstrBot 会判定模型不支持工具调用，**每轮把整张工具表清空**。
+表现是机器人反复说"我没有工具""我这边动不了"，还会吐 DSML 乱码。
+这个坑排查了整整一晚，详见 [tools-not-sent.md](guides/troubleshooting/tools-not-sent.md)。
+
 ## 技能列表
 
 ### `dsh-qq`
