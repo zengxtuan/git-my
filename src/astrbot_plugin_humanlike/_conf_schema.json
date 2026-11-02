@@ -1,0 +1,22 @@
+{
+  "min_delay": {
+    "description": "回复前最短停顿（秒）。真人不秒回",
+    "type": "float",
+    "default": 0.6
+  },
+  "max_delay": {
+    "description": "回复前最长停顿（秒）",
+    "type": "float",
+    "default": 1.8
+  },
+  "mark_read": {
+    "description": "收到消息先标记已读（真人会点开）",
+    "type": "bool",
+    "default": true
+  },
+  "typing_indicator": {
+    "description": "尝试开启“正在输入”状态（参数不兼容时会自动跳过）",
+    "type": "bool",
+    "default": true
+  }
+}

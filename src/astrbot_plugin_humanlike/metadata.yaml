@@ -1,0 +1,5 @@
+name: astrbot_plugin_humanlike
+desc: 让机器人像个人在打字：标记已读、回复前停顿、正在输入状态（降低机器味）
+version: 1.0.0
+author: YG
+repo: ""
