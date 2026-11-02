@@ -102,7 +102,7 @@ score = base + min(overlap * 0.08, 0.35)
 
 阈值 0.45。embedding 服务不可用时退回纯 2-gram 匹配。
 
-实测效果：
+实测效果（环境见 [../README.md#实测环境说明](../README.md#实测环境说明)，embedding 用 `BAAI/bge-small-zh-v1.5`）：
 
 | 你说 | 发出 | 分 |
 |---|---|---|

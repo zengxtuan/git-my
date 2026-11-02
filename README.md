@@ -31,9 +31,11 @@ description: Use when ...（AI 靠这句判断该不该加载）
 
 | 文档 | 内容 |
 |---|---|
-| [guides/README.md](guides/README.md) | 选路线、组件全景、三条硬约束 |
+| [guides/README.md](guides/README.md) | 选路线、组件全景、三条硬约束、实测环境说明 |
+| [guides/prerequisites.md](guides/prerequisites.md) | **动手前必读**：要什么、封号风险、一个月多少钱 |
 | [guides/local-windows.md](guides/local-windows.md) | **本地端**：Windows 上跑 AstrBot + NapCat，含自启守护 |
 | [guides/server-linux.md](guides/server-linux.md) | **服务器端**：Linux + systemd + 防火墙 + 备份回滚 |
+| [guides/plugins/README.md](guides/plugins/README.md) | 插件怎么装、装什么、权限怎么设 |
 | [guides/plugins/face-bridge.md](guides/plugins/face-bridge.md) | 表情/照片桥：收图、按描述找图、发图 |
 | [guides/plugins/qq-power.md](guides/plugins/qq-power.md) | 操作 QQ：放行、好友、备注、点赞、换头像、画图 |
 | [guides/plugins/local-embedding.md](guides/plugins/local-embedding.md) | 本地 embedding，免费替代付费向量服务 |

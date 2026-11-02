@@ -38,6 +38,7 @@ AstrBot 就认定这个模型不支持工具调用，**每轮请求都把 tools 
 ## 抓包证据
 
 用反向代理看真实请求（方法见 [capture-requests.md](capture-requests.md)）。
+下面的数字来自 AstrBot 4.29.3 + deepseek-flash 环境，见 [../README.md#实测环境说明](../README.md#实测环境说明)。
 
 **修复前：**
 
