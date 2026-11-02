@@ -23,6 +23,7 @@ guides/
 ├── prerequisites.md           ← ★ 动手前必读：要准备什么、有什么风险、一个月多少钱
 ├── risk-control.md            ← ★ 风控：能降的都降了，降不掉的说明白
 ├── multi-model.md             ← ★ 多模型分工：便宜模型说话，聪明模型记事
+├── proactive.md               ← ★ 主动性：会主动找人、能当场记事、会到点提醒
 ├── local-windows.md           ← 本地端完整流程
 ├── server-linux.md            ← 服务器端完整流程
 ├── plugins/
