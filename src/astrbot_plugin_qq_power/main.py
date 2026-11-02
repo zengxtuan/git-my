@@ -148,22 +148,24 @@ class QQPower(Star):
                 return p
         return None
 
-    async def _generate_avatar(self, prompt: str) -> Path | None:
-        """没有现成图时，自己画一张（Pollinations 免费文生图）。"""
+    async def _generate_image(
+        self, prompt: str, width: int = 1024, height: int = 1024, tag: str = "gen"
+    ) -> Path | None:
+        """用 Pollinations 免费文生图现画一张。"""
         import urllib.parse
 
-        prompt = (prompt or "a cute chubby blue whale cartoon avatar, flat illustration").strip()
+        prompt = (prompt or "a cute chubby blue whale, flat illustration").strip()
         url = (
             "https://image.pollinations.ai/prompt/"
-            + urllib.parse.quote(prompt[:180])
-            + "?width=768&height=768&nologo=true&seed="
+            + urllib.parse.quote(prompt[:300])
+            + f"?width={width}&height={height}&nologo=true&seed="
             + str(int(time.time()) % 100000)
         )
         self.avatar_dir.mkdir(parents=True, exist_ok=True)
         try:
             import aiohttp
 
-            tm = aiohttp.ClientTimeout(total=90)
+            tm = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=tm) as sess:
                 async with sess.get(url) as resp:
                     if resp.status != 200:
@@ -176,14 +178,35 @@ class QQPower(Star):
         if len(data) < 5000:
             logger.warning("[qq_power] 生图返回太小: %d bytes", len(data))
             return None
-        path = self.avatar_dir / f"gen_{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+        path = self.avatar_dir / f"{tag}_{time.strftime('%Y%m%d-%H%M%S')}.jpg"
         try:
             path.write_bytes(data)
         except Exception as e:
             logger.warning("[qq_power] 存图失败: %s", e)
             return None
-        logger.info("[qq_power] 自己画了一张头像: %s (%d bytes)", path.name, len(data))
+        logger.info("[qq_power] 画好一张 %s: %s (%d bytes)", tag, path.name, len(data))
         return path
+
+    async def _generate_avatar(self, prompt: str) -> Path | None:
+        return await self._generate_image(prompt, 768, 768, tag="avatar")
+
+    async def _do_draw(self, event: AstrMessageEvent, prompt: str) -> str:
+        """画一张图直接发给用户（不换头像）。"""
+        if not prompt:
+            return "要画什么？给我个描述"
+        size = (1024, 1024)
+        low = prompt.lower()
+        if any(k in low for k in ("壁纸", "横", "wallpaper", "横版")):
+            size = (1024, 576)
+        path = await self._generate_image(prompt, size[0], size[1], tag="draw")
+        if not path or not path.exists():
+            return "画失败了，再说一次要画什么？"
+        from astrbot.api.message_components import Image as _Img
+
+        await event.send(MessageChain([_Img.fromFileSystem(path)]))
+        logger.info("[qq_power] 已画图并发给用户: %s", path.name)
+        return f"画好了（{path.name}），已经发过去了"
+
 
     async def _do_set_avatar(self, event: AstrMessageEvent, want: str) -> str:
         """换头像：优先用这条消息里带的图，其次从库里按描述挑。"""
@@ -250,10 +273,11 @@ class QQPower(Star):
         用户说「加他进来」「让他能跟我说话」就用 放行；
         说「别让他烦我」「踢了」就用 收回；说「删了他」才用 删好友。
         说「换个头像」「用这张当你头像」就用 换头像（不用 target，直接用消息里的图或库里最新那张）。
+        说「画一张」「给我画个…」「来张…的图」就用 画图，target 填要画的内容。
 
         Args:
             action(string): 要做的事，取上面列出的值之一
-            target(string): 目标 QQ 号 / flag / 图片描述（比如"傲娇那张"），没有就留空
+            target(string): 目标 QQ 号 / flag / 图片或画面描述（比如"傲娇那张""蓝色鲸鱼的壁纸"），没有就留空
             extra(string): 附加内容，比如备注名、点赞次数、新昵称
 
         Returns:
@@ -271,6 +295,8 @@ class QQPower(Star):
             pass
 
         try:
+            if act in ("画图", "画", "生成图", "作画"):
+                return await self._do_draw(event, tg or ex)
             if act == "换头像":
                 return await self._do_set_avatar(event, tg or ex)
             if act == "放行":
