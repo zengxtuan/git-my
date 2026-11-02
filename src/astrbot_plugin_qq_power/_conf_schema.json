@@ -1,0 +1,12 @@
+{
+  "media_json_path": {
+    "description": "face_bridge 的 media.json 路径，留空自动查找（换头像/按描述找图时用）",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_base": {
+    "description": "本地 embedding 服务地址，用于按描述挑图；没有就留默认",
+    "type": "string",
+    "default": "http://127.0.0.1:8484/v1"
+  }
+}

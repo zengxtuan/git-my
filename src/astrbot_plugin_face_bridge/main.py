@@ -314,13 +314,14 @@ class FaceBridge(Star):
         return rec
 
     async def _embed(self, text: str) -> list[float] | None:
+        base = str(self.config.get("embedding_base") or "http://127.0.0.1:8484/v1").rstrip("/")
         try:
             import aiohttp
 
             tm = aiohttp.ClientTimeout(total=8)
             async with aiohttp.ClientSession(timeout=tm) as sess:
                 async with sess.post(
-                    "http://127.0.0.1:8484/v1/embeddings",
+                    f"{base}/embeddings",
                     json={"input": text[:200]},
                 ) as resp:
                     if resp.status != 200:

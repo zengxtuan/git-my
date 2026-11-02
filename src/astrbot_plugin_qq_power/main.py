@@ -105,11 +105,26 @@ class QQPower(Star):
 
     # ------------------------------------------------------------- 头像相关
 
-    MEDIA_JSON = Path("/opt/astrbot/data/plugin_data/astrbot_plugin_face_bridge/media.json")
+    def _media_json_path(self) -> Path | None:
+        """face_bridge 的索引文件。默认用相对路径，装在别处也能找到。"""
+        custom = str(self.config.get("media_json_path") or "").strip()
+        if custom:
+            p = Path(custom)
+            return p if p.exists() else None
+        for cand in (
+            Path("data/plugin_data/astrbot_plugin_face_bridge/media.json"),
+            Path(__file__).resolve().parents[2] / "plugin_data/astrbot_plugin_face_bridge/media.json",
+        ):
+            if cand.exists():
+                return cand
+        return None
 
     def _media_pool(self) -> list[dict]:
+        p = self._media_json_path()
+        if p is None:
+            return []
         try:
-            data = json.loads(self.MEDIA_JSON.read_text(encoding="utf-8"))
+            data = json.loads(p.read_text(encoding="utf-8"))
             return [r for r in data.values() if isinstance(r, dict) and r.get("path")]
         except Exception:
             return []
