@@ -227,6 +227,8 @@ meme_manager 配置 → community.github_accelerator_url → https://gh-proxy.co
 
 手动 `nohup` 跑的东西，服务器一重启就没了。
 
+> 这一节对应 SKILL.md 第 8 阶段。Windows 那边用的是「启动文件夹 + 守护脚本」，**只在用户登录后才运行**；Linux 的 systemd 不需要任何人登录，这是上云最实在的收益之一。两边的对比见 SKILL.md「两种部署形态」和坑表里「重启机器后机器人没起来」那条。
+
 `/etc/systemd/system/astrbot.service`：
 
 ```ini
