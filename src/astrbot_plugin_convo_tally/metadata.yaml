@@ -1,0 +1,6 @@
+name: astrbot_plugin_convo_tally
+display_name: 会话计费
+desc: 按会话累计 token 与花费，提供 get_chat_cost 工具让模型自查本轮/今日/累计开销。价目表只从配置读，拿不到价格时返回未计价，不编数字。
+version: 1.0.0
+author: YG
+repo: https://github.com/zengxtuan/git-my

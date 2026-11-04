@@ -1,0 +1,44 @@
+{
+  "default_model": {
+    "description": "响应里拿不到 model 字段时，用这个名字去价目表查价",
+    "type": "string",
+    "default": "deepseek-chat"
+  },
+  "usd_rate": {
+    "description": "人民币兑美元汇率，仅用于把人民币换算成美元展示",
+    "type": "float",
+    "default": 7.3
+  },
+  "prices": {
+    "description": "价目表：模型名 → {input, input_cached, output, off_peak_ratio}，金额单位「元 / 百万 token」。改价只改这里，不用动代码。",
+    "type": "dict",
+    "default": {
+      "deepseek-chat": {
+        "input": 2.0,
+        "input_cached": 0.5,
+        "output": 8.0,
+        "off_peak_ratio": 0.5
+      },
+      "deepseek-flash": {
+        "input": 0.5,
+        "input_cached": 0.1,
+        "output": 2.0,
+        "off_peak_ratio": 0.5
+      }
+    }
+  },
+  "fallback_prices": {
+    "description": "模型不在价目表里时的兜底价格。留空则不兜底，直接返回「未计价」",
+    "type": "dict",
+    "default": {}
+  },
+  "off_peak": {
+    "description": "谷时时段，按服务器本地时间判断，支持跨午夜（start > end 视为跨天）",
+    "type": "dict",
+    "default": {
+      "enabled": true,
+      "start": "00:30",
+      "end": "08:30"
+    }
+  }
+}
