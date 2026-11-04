@@ -89,3 +89,60 @@ VALUES (datetime('now'), datetime('now'), 'my-persona', '<系统提示词>',
 | `platform_settings.no_permission_reply` | 无权限是否回复 | `true` 会提示，`false` 静默 |
 | `provider_settings.datetime_system_prompt` | 注入当前时间 | `true`，人格才能"知道几点" |
 | `agent_runner.config.compression.overflow_strategy` | 上下文超限策略 | `"llm_compress"` 摘要压缩 |
+
+## 分段回复（长文拆成多条）
+
+| 配置项 | 作用 | 推荐值 |
+|---|---|---|
+| `platform_settings.segmented_reply.enable` | 开关 | `true` |
+| `...words_count_threshold` | **超过这个字数就不分段** | `5000` |
+| `...split_mode` | 切分方式 | `"words"` |
+| `...split_words` | 切分点（字面词，非正则） | 见下 |
+| `...interval` | 两条之间的间隔秒数 | `"1.2,2.6"` |
+
+```json
+"segmented_reply": {
+  "enable": true,
+  "only_llm_result": true,
+  "words_count_threshold": 5000,
+  "split_mode": "words",
+  "split_words": [
+    "第二部分", "第三部分", "第四部分", "第五部分", "第六部分",
+    "###",
+    "\n\n"
+  ],
+  "interval_method": "random",
+  "interval": "1.2,2.6"
+}
+```
+
+### 两个必须知道的点
+
+**1. `words_count_threshold` 的逻辑是反的**
+
+源码 `core/pipeline/result_decorate/stage.py`：
+
+```python
+if len(comp.text) > self.words_count_threshold:
+    # 不分段回复
+    new_chain.append(comp)
+    continue
+```
+
+**超过阈值反而不分段**（设计意图是"长文别切成几十条刷屏"）。默认 300，
+所以"分成三段发我"这种千字内容会整条发出，看起来像"它不懂分段"。要让它分段，把阈值调到 5000。
+
+**2. `split_mode: "words"` 的切分点是字面词**
+
+不支持正则。代码会 `re.escape` 后按长度倒序拼接，所以写 `"第二部分"` 不会被更短的
+`"第二部"` 抢先匹配——但反过来，你也不能用 `第.部分` 这种模式。
+
+实测（2026-11-04）三种格式都能正确切成 3 段：
+
+| 模型输出格式 | 结果 |
+|---|---|
+| `第一部分 / 第二部分 / 第三部分` | 3 段 |
+| `### 一、xxx` 开头的 Markdown 标题 | 3 段 |
+| 纯空行分隔 | 3 段 |
+
+产物里 `###` 和「第X部分」标记本身会被去掉，段首可能直接是正文。
