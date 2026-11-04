@@ -22,6 +22,9 @@ guides/
 ├── README.md                  ← 你在看的这份：选路线、看全局
 ├── prerequisites.md           ← ★ 动手前必读：要准备什么、有什么风险、一个月多少钱
 ├── risk-control.md            ← ★ 风控：能降的都降了，降不掉的说明白
+├── setup-checklist.md         ← ★ 装完必做清单：白名单/admins_id/双锁/computer_use/端口
+├── capabilities.md            ← ★ 能力总表与权限分级：谁能让它做什么
+├── operations.md              ← ★ 运维三件事：日志在哪、先查哪行、备份什么
 ├── multi-model.md             ← ★ 多模型分工：便宜模型说话，聪明模型记事
 ├── proactive.md               ← ★ 主动性：会主动找人、能当场记事、会到点提醒
 ├── local-windows.md           ← 本地端完整流程
@@ -42,10 +45,14 @@ guides/
 [**prerequisites.md**](prerequisites.md) 里写清楚了三件事，**建议先看完再动手**：
 
 1. 需要一个**专门的小号**（不是主号）
-2. 第三方协议端**有封号风险，无法归零**
+2. 第三方协议端**有封号风险，无法归零**——轻则限制发言，重则**永久封禁**，没有申诉通道
 3. 一个月大约 **20–40 元**模型费 + 服务器约 100–150 元/年
 
+**主号绝对不能碰。** 主号一旦被处置，绑定的微信、支付、好友关系、群聊身份全部受影响，且不可逆。
+
 如果这两条风险（封号、掉线要重扫码）不能接受，这个方案就不适合你。
+
+装完之后还有一份必做清单：[**setup-checklist.md**](setup-checklist.md)（白名单、admins_id、双锁、computer_use、端口绑定），少做一项就等于把账号和余额交出去。权限怎么分见 [**capabilities.md**](capabilities.md)，出事怎么查见 [**operations.md**](operations.md)。
 
 ## 实测环境说明
 

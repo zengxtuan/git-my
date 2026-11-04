@@ -302,12 +302,14 @@ class QQPower(Star):
         tg = (target or "").strip()
         ex = (extra or "").strip()
 
-        # 安全兜底：就算 tool_permissions 配置丢了，也不让非管理员操作
+        # 安全兜底：就算 tool_permissions 配置丢了，也不让非管理员操作。
+        # 注意是 fail-close：判断本身出错时按非管理员处理，不能放行。
         try:
             if not event.is_admin():
                 return "这个只有主人能让我做"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[qq_power] is_admin 判断失败，按非管理员处理: %s", e)
+            return "权限校验没通过，这个我不能做"
 
         try:
             if act in ("画图", "画", "生成图", "作画"):

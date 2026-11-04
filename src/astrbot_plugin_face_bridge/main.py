@@ -31,6 +31,17 @@ MEDIA_DIR = "media"
 FACE_TABLE_FILE = "qq_faces.json"
 EXT_WHITELIST = {".gif", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
+
+def _is_admin(event) -> bool:
+    """发起者是不是管理员。判断失败一律按非管理员处理（fail-close）。"""
+    try:
+        checker = getattr(event, "is_admin", None)
+        if callable(checker):
+            return bool(checker())
+    except Exception as e:
+        logger.warning("[face_bridge] is_admin 判断失败，按非管理员处理: %s", e)
+    return False
+
 # 表情还是照片：GIF 一律表情；边长 ≤512 且 ≤300KB 也算表情；其余按照片存
 MEME_MAX_SIDE = 512
 MEME_MAX_BYTES = 300 * 1024
@@ -512,6 +523,12 @@ class FaceBridge(Star):
         # 没说清要表情还是照片，就不发。宁可沉默，也别甩一张不相干的旧图
         if kind is None:
             return {"ok": False, "reason": "没点名要表情还是照片，不发"}
+
+        # 照片属于私人物品（相册、聊天截图）。这一层不依赖 tool_permissions，
+        # 配置被重置成 null 也挡得住。
+        if kind == "photo" and not _is_admin(event):
+            logger.info("[face_bridge] 拒绝非管理员索取照片 reason=%s", reason)
+            return {"ok": False, "reason": "照片只给管理员看"}
 
         rec = await self.afind(want, kind=kind)
         if rec and await self._deliver(event, rec, reason):

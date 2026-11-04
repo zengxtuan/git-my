@@ -96,8 +96,27 @@ https://gh-proxy.com/https://raw.githubusercontent.com/<owner>/<repo>/main/...
 }
 ```
 
+**`send_media` 为什么是 `user`**：表情包谁都能要。但工具内按 `kind` 分流——
+`kind=face`（表情包）放行，`kind=photo`（相册、聊天截图）在代码层再判 `is_admin()`，
+非管理员一律拒绝。配置层放行 ≠ 照片能拿到。
+
 **但配置不牢靠**：实测 `tool_permissions` 会被 AstrBot 在某些情况下重置成 `null`。
-所以自己写的插件里最好再加一道 `if not event.is_admin(): return`。
+所以自己写的插件里**必须**再加一道代码判断，而且要是 **fail-close**：
+
+```python
+def _is_admin(event) -> bool:
+    """判断失败一律当非管理员（fail-close），不能 except: pass 放行。"""
+    try:
+        checker = getattr(event, "is_admin", None)
+        if callable(checker):
+            return bool(checker())
+    except Exception as e:
+        logger.warning("is_admin 判断失败，按非管理员处理: %s", e)
+    return False
+```
+
+完整的五项必做见 [../setup-checklist.md](../setup-checklist.md)，权限怎么分级见
+[../capabilities.md](../capabilities.md)。
 
 ## 五、装完怎么验证
 
