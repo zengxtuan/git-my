@@ -39,7 +39,11 @@ MEME_MAX_BYTES = 300 * 1024
 
 # 明确的索图说法。"发这个给我""把这个还我"这种指代式也要认。
 SEND_PATTERN = (
-    r"(发我|发给我|发过来|发回来|发一下|发来看看|发我看看|那张|这张|壁纸)"
+    # 裸「发我」会把「分成两段发我」「发我邮箱」这类误判成索图，
+    # 必须跟具体指向（那张/这个/表情/照片）才算
+    r"((发我|发给我|发过来|发回来|发来看看|发我看看)[^，。！？]{0,6}(这个|这张|那张|它|表情|照片|图))"
+    r"|((这个|这张|那张|它|表情|照片|图)[^，。！？]{0,6}(发我|发给我|发过来|发回来|发我看看|发来看看))"
+    r"|(那张|这张|壁纸)"
     r"|((发|还|回|给)[^，。！？]{0,6}(这个|这张|那张|它|原图|表情|照片|图))"
     r"|((这个|这张|那张|它)[^，。！？]{0,4}(还|发|回)(我|给我|来))"
 )
@@ -505,6 +509,10 @@ class FaceBridge(Star):
         wants_face = "表情" in want
         kind = "photo" if wants_photo else ("face" if wants_face else None)
 
+        # 没说清要表情还是照片，就不发。宁可沉默，也别甩一张不相干的旧图
+        if kind is None:
+            return {"ok": False, "reason": "没点名要表情还是照片，不发"}
+
         rec = await self.afind(want, kind=kind)
         if rec and await self._deliver(event, rec, reason):
             return {"ok": True, "sent": rec["id"], "kind": rec.get("kind")}
@@ -871,7 +879,7 @@ class FaceBridge(Star):
     @filter.command("发图")
     async def cmd_send(self, event: AstrMessageEvent):
         """发最新收进库的那张。"""
-        result = await self._deliver_best(event, "", reason="command")
+        result = await self._deliver_best(event, "照片", reason="command")
         if not result.get("ok"):
             await event.send(MessageChain([Plain("库里还没有图呢")]))
         event.stop_event()
