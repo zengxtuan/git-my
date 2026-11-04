@@ -18,5 +18,10 @@
     "description": "OpenAI 兼容的 embedding 服务地址（按描述找图用）；没有就留默认，会自动退回 2-gram 匹配",
     "type": "string",
     "default": "http://127.0.0.1:8484/v1"
+  },
+  "lookup_every_message": {
+    "description": "每条消息都联网查一次当参考。关掉后只在明确要求时查，避免搜索结果污染对话",
+    "type": "bool",
+    "default": false
   }
 }

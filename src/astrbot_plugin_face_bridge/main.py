@@ -523,6 +523,40 @@ class FaceBridge(Star):
 
     # ------------------------------------------------------------------ 钩子
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
+    async def make_pure_emoji_visible(self, event: AstrMessageEvent):
+        """纯表情消息会被 AstrBot 当成"空消息"直接跳过，模型根本看不到。
+
+        agent_sub_stages/internal.py 里 has_media_content 只认
+        Image/File/Record/Video，Face 和 mface 都不算，message_str 又是空的，
+        于是 "skip llm request: empty message" —— 主人单发一个表情，小曦毫无反应。
+        这里补一个占位文本，让这条消息能进模型；真正的表情名称由
+        annotate_qq_faces 注入。
+        """
+        try:
+            if (event.get_message_str() or "").strip():
+                return
+            has_face = any(isinstance(c, Face) for c in event.get_messages())
+            has_mface = bool(self._raw_mfaces(event))
+        except Exception as e:
+            logger.debug("[face_bridge] 纯表情检测失败: %s", e)
+            return
+        if not (has_face or has_mface):
+            return
+        try:
+            event.message_str = "[QQ表情]"
+        except Exception:
+            logger.debug("[face_bridge] 写 message_str 失败，继续尝试 message_obj")
+        try:
+            event.message_obj.message_str = "[QQ表情]"
+        except Exception as e:
+            logger.debug("[face_bridge] 写 message_obj.message_str 失败: %s", e)
+        logger.info(
+            "[face_bridge] 纯表情消息已补占位文本 (face=%s, mface=%s)",
+            has_face,
+            has_mface,
+        )
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
         """收到图就静默入库，不打断对话。"""
@@ -619,31 +653,69 @@ class FaceBridge(Star):
 
     @filter.on_llm_request(priority=4)
     async def annotate_qq_faces(self, event: AstrMessageEvent, req):
-        """把 QQ 自带小表情翻译成人话，否则模型只看到一串编号。
+        """把 QQ 自带小表情 / 表情包 / 超级表情翻译成人话。
 
-        AstrBot 解析消息时不会把 Face 段写进 message_str，模型完全不知道用户发了表情。
-        这里从 QQ 客户端自带的 default_config.json 里取的名称表（264 条）做翻译。
+        这里有两个坑：
+        1. ``Face`` 段不会进 message_str，模型只看到编号 —— 用 qq_faces.json 翻译。
+        2. **``mface`` 段（QQ 自带表情包、超级表情、商城表情）会被 aiocqhttp 适配器
+           直接 ``continue`` 丢掉**，连组件都不生成，模型完全瞎。只能从
+           ``raw_message`` 里自己把原始段捞回来。
         """
+        names: list[str] = []
         try:
-            faces = [c for c in event.get_messages() if isinstance(c, Face)]
-        except Exception:
-            return
-        if not faces:
-            return
-        names = []
-        for f in faces:
-            fid = getattr(f, "id", None)
-            if fid is None:
-                continue
-            names.append(self.face_table.get(str(fid)) or f"表情ID{fid}")
+            for c in event.get_messages():
+                if isinstance(c, Face):
+                    fid = getattr(c, "id", None)
+                    if fid is not None:
+                        names.append(self.face_table.get(str(fid)) or f"表情ID{fid}")
+        except Exception as e:
+            logger.debug("[face_bridge] 读取 Face 组件失败: %s", e)
+
+        mfaces = self._raw_mfaces(event)
+        if mfaces:
+            logger.info(
+                "[face_bridge] 收到 mface 原始段: %s",
+                json.dumps(mfaces, ensure_ascii=False)[:800],
+            )
+            names.extend(self._describe_mface(d) for d in mfaces)
+
         if not names:
             return
         self._append_context(
             req,
-            f"【用户这条消息里带了 QQ 表情：{'、'.join(names)}。"
-            "按表情的情绪自然回应，别提什么编号】",
+            f"【用户这条消息里带了 QQ 自带表情：{'、'.join(names)}。"
+            "这些是 QQ 的表情/表情包本身，不是他发来的照片或个人图片；"
+            "按表情的情绪自然回应，别提什么编号或段类型】",
         )
         logger.info("[face_bridge] 表情已翻译: %s", "、".join(names))
+
+    @staticmethod
+    def _raw_mfaces(event: AstrMessageEvent) -> list[dict]:
+        """从原始 OneBot 事件里捞出被适配器丢掉的 mface 段。"""
+        try:
+            obj = getattr(event, "message_obj", None)
+            raw = getattr(obj, "raw_message", None) if obj is not None else None
+            if not isinstance(raw, dict):
+                return []
+            out: list[dict] = []
+            for seg in raw.get("message") or []:
+                if isinstance(seg, dict) and seg.get("type") == "mface":
+                    data = seg.get("data")
+                    if isinstance(data, dict):
+                        out.append(data)
+            return out
+        except Exception as e:
+            logger.debug("[face_bridge] 解析 mface 失败: %s", e)
+            return []
+
+    @staticmethod
+    def _describe_mface(data: dict) -> str:
+        summary = str(data.get("summary") or "").strip().strip("[]【】")
+        if summary:
+            return f"表情包「{summary}」"
+        eid = data.get("emoji_id") or "?"
+        pkg = data.get("emoji_package_id") or "?"
+        return f"表情包(emoji_id={eid}, 包={pkg})"
 
     def _load_face_table(self) -> dict[str, str]:
         p = Path(__file__).parent / FACE_TABLE_FILE
@@ -663,6 +735,7 @@ class FaceBridge(Star):
         rec = self.recent_media
         if not rec:
             return
+        self.recent_media = None  # 只提示一次，避免每条消息都重复塞
         kind = "表情包" if rec.get("kind") == "face" else "照片"
         note = (
             f"【前提：你刚已经把那{kind}发出去了（编号 {rec.get('id')}），"
